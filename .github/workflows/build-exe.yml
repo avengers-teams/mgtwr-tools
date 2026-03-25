@@ -34,7 +34,6 @@ jobs:
           script-name: main.py  # 修改为你的主脚本文件名
           onefile: true
           mingw64: true
-          standalone: true
           show-progress: true
           show-memory: true
           output-dir: out

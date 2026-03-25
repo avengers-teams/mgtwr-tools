@@ -179,7 +179,7 @@ class DataVisualizationPage(QWidget):
         self.chart_combo.currentIndexChanged.connect(self.on_chart_changed)
         control_layout.addWidget(self.chart_combo, 0, 1)
 
-        control_layout.addWidget(QLabel("变量"), 0, 2)
+        control_layout.addWidget(QLabel("统计量"), 0, 2)
         self.beta_combo = ModernComboBox()
         self.beta_combo.currentIndexChanged.connect(self.render_current_chart)
         control_layout.addWidget(self.beta_combo, 0, 3)
@@ -429,7 +429,7 @@ class DataVisualizationPage(QWidget):
             self.chart_combo.addItem(spec.label, userData=spec)
 
         self.beta_combo.clear()
-        for column, display_name in self.dataset.get_beta_display_names():
+        for column, display_name in self.dataset.get_metric_display_names():
             self.beta_combo.addItem(display_name, userData=column)
 
         self.coordinate_columns = self.dataset.spatial_candidate_columns()
@@ -441,7 +441,7 @@ class DataVisualizationPage(QWidget):
 
         if self.chart_specs:
             self.chart_combo.setCurrentIndex(0)
-        if self.dataset.beta_columns:
+        if self.dataset.metric_columns:
             self.beta_combo.setCurrentIndex(0)
 
     def populate_font_combo(self):
@@ -665,11 +665,11 @@ class DataVisualizationPage(QWidget):
         has_beta = self.beta_combo.count() > 0
         self.beta_combo.setEnabled(requires_beta and has_beta)
         if not has_beta:
-            self.beta_combo.setToolTip("当前结果文件没有可用的系数列，只有包含 beta_ 列的结果文件才能选择变量")
+            self.beta_combo.setToolTip("当前结果文件没有可用的统计量字段，至少需要包含 beta_ / se_ / t_ 中的一类字段")
         elif not requires_beta:
-            self.beta_combo.setToolTip("当前图表不需要选择变量")
+            self.beta_combo.setToolTip("当前图表不需要选择统计量字段")
         else:
-            self.beta_combo.setToolTip("选择要展示的变量")
+            self.beta_combo.setToolTip("选择要展示的统计量字段")
 
     def render_current_chart(self):
         if self.dataset is None:
@@ -682,7 +682,7 @@ class DataVisualizationPage(QWidget):
         beta_column = self.current_beta_column()
         self.update_beta_control_state(spec)
         if spec.requires_beta and beta_column is None:
-            self.chart_hint_label.setText("当前图表需要选择变量。")
+            self.chart_hint_label.setText("当前图表需要选择统计量字段。")
             return
 
         render_options = self.current_render_options()
@@ -705,7 +705,7 @@ class DataVisualizationPage(QWidget):
     def build_chart_hint(self, spec, beta_column, render_options):
         parts = [f"当前图表：{spec.label}"]
         if spec.requires_beta and beta_column:
-            parts.append(f"变量：{str(beta_column).removeprefix('beta_')}")
+            parts.append(f"统计量：{self.dataset.metric_display_name(beta_column)}")
         parts.append(f"小数位：{self.decimal_spin.value()}")
         if ChartFactory.chart_uses_spatial_coordinates(spec.key):
             if render_options.longitude_column and render_options.latitude_column:

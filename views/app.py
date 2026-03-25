@@ -11,6 +11,7 @@ from views.pages.data_crawling import DirectorySelector
 from views.pages.data_preparation import DataGenerationPage
 from views.pages.data_validation.index import AdditionalWindows
 from views.pages.data_visualization import DataVisualizationPage
+from views.pages.significance_analysis import SignificanceAnalysisPage
 from views.pages.task_manager import TaskManager
 from views.theme import make_scrollable
 
@@ -40,6 +41,7 @@ class MainWindow(FluentWindow):
         self.dir_select_page = DirectorySelector(self.console_output, self.task_manager)
         self.mgrwr_page = MGRWRAnalysisPage(self.console_output, self.task_manager)
         self.data_visualization_page = DataVisualizationPage(self.console_output)
+        self.significance_analysis_page = SignificanceAnalysisPage(self.console_output)
         self.additional_page = AdditionalWindows()
 
         self.build_workspace()
@@ -103,6 +105,7 @@ class MainWindow(FluentWindow):
         self.register_page(self.dir_select_page, "data_crawling", "国家数据爬取", FluentIcon.GLOBE)
         self.register_page(self.mgrwr_page, "model_analysis", "模型分析", FluentIcon.ROBOT)
         self.register_page(self.data_visualization_page, "data_visualization", "数据可视化", FluentIcon.PIE_SINGLE)
+        self.register_page(self.significance_analysis_page, "significance_analysis", "显著性分析", FluentIcon.FLAG)
 
         self.navigationInterface.addSeparator()
 

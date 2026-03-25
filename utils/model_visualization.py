@@ -107,6 +107,7 @@ class VisualizationData:
         self.beta_columns = [col for col in self.coefficients.columns if str(col).startswith("beta_")]
         self.se_columns = [col for col in self.coefficients.columns if str(col).startswith("se_")]
         self.t_columns = [col for col in self.coefficients.columns if str(col).startswith("t_")]
+        self.metric_columns = self.beta_columns + self.se_columns + self.t_columns
         self.variable_names = [column.removeprefix("beta_") for column in self.beta_columns]
         self._infer_structure()
 
@@ -254,17 +255,17 @@ class VisualizationData:
         charts = [ChartSpec("predicted_actual", "实际值 vs 预测值"), ChartSpec("residual_histogram", "残差分布")]
         if self.has_spatial() or len(self.spatial_candidate_columns()) >= 2:
             charts.extend([ChartSpec("residual_spatial", "残差空间分布"), ChartSpec("regional_residual_map", "残差区域着色图")])
-        if self.beta_columns:
-            charts.append(ChartSpec("coefficient_distribution", "局部系数分布", requires_beta=True))
+        if self.metric_columns:
+            charts.append(ChartSpec("coefficient_distribution", "统计量分布", requires_beta=True))
             if self.has_spatial() or len(self.spatial_candidate_columns()) >= 2:
                 charts.extend([
-                    ChartSpec("coefficient_spatial", "局部系数空间分布", requires_beta=True),
-                    ChartSpec("regional_coefficient_map", "局部系数区域着色图", requires_beta=True),
+                    ChartSpec("coefficient_spatial", "统计量空间分布", requires_beta=True),
+                    ChartSpec("regional_coefficient_map", "统计量区域着色图", requires_beta=True),
                 ])
             if self.has_temporal() or self.temporal_candidate_columns():
                 charts.extend([
-                    ChartSpec("coefficient_temporal", "局部系数时间趋势", requires_beta=True),
-                    ChartSpec("coefficient_3d", "时间-分类 3D 图", requires_beta=True),
+                    ChartSpec("coefficient_temporal", "统计量时间趋势", requires_beta=True),
+                    ChartSpec("coefficient_3d", "统计量时间-分类 3D 图", requires_beta=True),
                 ])
         if self.search_scores is not None and not self.search_scores.empty:
             charts.append(ChartSpec("search_scores", "搜索评分曲线"))
@@ -282,8 +283,31 @@ class VisualizationData:
             return self.format_number(value, decimals)
         return str(value)
 
-    def get_beta_display_names(self):
-        return [(column, column.removeprefix("beta_")) for column in self.beta_columns]
+    def get_metric_display_names(self):
+        return [(column, self.metric_display_name(column)) for column in self.metric_columns]
+
+    @staticmethod
+    def metric_prefix_label(column):
+        column = str(column)
+        if column.startswith("beta_"):
+            return "系数"
+        if column.startswith("se_"):
+            return "标准误"
+        if column.startswith("t_"):
+            return "t值"
+        return "统计量"
+
+    @staticmethod
+    def metric_base_name(column):
+        column = str(column)
+        for prefix in ("beta_", "se_", "t_"):
+            if column.startswith(prefix):
+                return column.removeprefix(prefix)
+        return column
+
+    @classmethod
+    def metric_display_name(cls, column):
+        return f"{cls.metric_prefix_label(column)} | {cls.metric_base_name(column)}"
 
     def _get_summary_sequence(self, key):
         value = self.summary.get(key)
@@ -475,7 +499,7 @@ class ChartFactory:
     @staticmethod
     def _plot_coefficient_distribution(dataset, axes, beta_column, render_options):
         if beta_column is None:
-            raise ValueError("当前图表需要选择变量")
+            raise ValueError("当前图表需要选择统计量字段")
         coefficients = ChartFactory._filtered_coefficients(dataset, render_options, apply_time_slice=True)
         values = pd.to_numeric(coefficients[beta_column], errors="coerce").dropna()
         if values.empty:
@@ -489,8 +513,9 @@ class ChartFactory:
             linewidth=1.4,
             label=f"{ChartFactory._legend_label(render_options, '均值')} {ChartFactory._format_number(values.mean(), decimals)}",
         )
-        axes.set_title(ChartFactory._title(render_options, f"{beta_column.removeprefix('beta_')} 的局部系数分布"))
-        axes.set_xlabel("系数")
+        metric_label = VisualizationData.metric_display_name(beta_column)
+        axes.set_title(ChartFactory._title(render_options, f"{metric_label} 分布"))
+        axes.set_xlabel(VisualizationData.metric_prefix_label(beta_column))
         axes.set_ylabel("频数")
         axes.grid(axis="y", alpha=0.18)
         axes.legend(frameon=False)
@@ -499,12 +524,12 @@ class ChartFactory:
     @staticmethod
     def _plot_coefficient_spatial(dataset, axes, beta_column, render_options):
         if beta_column is None:
-            raise ValueError("当前图表需要选择变量")
+            raise ValueError("当前图表需要选择统计量字段")
         coefficients = ChartFactory._filtered_coefficients(dataset, render_options, apply_time_slice=True)
         x_col, y_col = ChartFactory._resolve_coordinate_columns(dataset, render_options)
         numeric = ChartFactory._coerce_numeric_columns(coefficients, [x_col, y_col, beta_column])
         if numeric.empty:
-            raise ValueError("坐标列或系数列没有可用于绘图的数值")
+            raise ValueError("坐标列或统计量字段没有可用于绘图的数值")
         scatter = axes.scatter(
             numeric[x_col],
             numeric[y_col],
@@ -514,23 +539,38 @@ class ChartFactory:
             alpha=0.9,
             edgecolors="none",
         )
-        axes.set_title(ChartFactory._title(render_options, f"{beta_column.removeprefix('beta_')} 的空间分布"))
+        metric_label = VisualizationData.metric_display_name(beta_column)
+        axes.set_title(ChartFactory._title(render_options, f"{metric_label} 空间分布"))
         axes.set_xlabel(str(x_col))
         axes.set_ylabel(str(y_col))
         axes.grid(alpha=0.18)
-        axes.figure.colorbar(scatter, ax=axes, shrink=0.9, label=ChartFactory._legend_label(render_options, "局部系数"), format=ChartFactory._colorbar_format(render_options))
+        axes.figure.colorbar(
+            scatter,
+            ax=axes,
+            shrink=0.9,
+            label=ChartFactory._legend_label(render_options, VisualizationData.metric_prefix_label(beta_column)),
+            format=ChartFactory._colorbar_format(render_options),
+        )
         ChartFactory._apply_decimal_formatters(axes, render_options, ("x", "y"))
 
     @classmethod
     def _plot_regional_coefficient_map(cls, dataset, axes, beta_column, render_options):
         if beta_column is None:
-            raise ValueError("当前图表需要选择变量")
-        cls._plot_regional_map(dataset, axes, beta_column, beta_column.removeprefix("beta_"), ChartFactory._title(render_options, f"{beta_column.removeprefix('beta_')} 区域着色图"), render_options)
+            raise ValueError("当前图表需要选择统计量字段")
+        metric_name = VisualizationData.metric_display_name(beta_column)
+        cls._plot_regional_map(
+            dataset,
+            axes,
+            beta_column,
+            metric_name,
+            ChartFactory._title(render_options, f"{metric_name} 区域着色图"),
+            render_options,
+        )
 
     @staticmethod
     def _plot_coefficient_temporal(dataset, axes, beta_column, render_options):
         if beta_column is None:
-            raise ValueError("当前图表需要选择变量")
+            raise ValueError("当前图表需要选择统计量字段")
         time_column = ChartFactory._resolve_time_column(dataset, render_options)
         coefficients = ChartFactory._filtered_coefficients(dataset, render_options, apply_time_slice=False)
         numeric = ChartFactory._coerce_numeric_columns(coefficients, [beta_column])
@@ -539,9 +579,10 @@ class ChartFactory:
         grouped = numeric.groupby(time_column, sort=False)[beta_column].mean().reset_index()
         grouped = ChartFactory._sort_frame_by_time(grouped, time_column)
         axes.plot(grouped[time_column], grouped[beta_column], color="#0f6cbd", linewidth=2.0, marker="o")
-        axes.set_title(ChartFactory._title(render_options, f"{beta_column.removeprefix('beta_')} 的时间趋势"))
+        metric_label = VisualizationData.metric_display_name(beta_column)
+        axes.set_title(ChartFactory._title(render_options, f"{metric_label} 时间趋势"))
         axes.set_xlabel(str(time_column))
-        axes.set_ylabel("平均局部系数")
+        axes.set_ylabel(f"平均{VisualizationData.metric_prefix_label(beta_column)}")
         axes.grid(alpha=0.18)
         if pd.to_numeric(grouped[time_column], errors="coerce").notna().all():
             ChartFactory._apply_decimal_formatters(axes, render_options, ("x", "y"))
@@ -551,7 +592,7 @@ class ChartFactory:
     @staticmethod
     def _plot_coefficient_3d(dataset, axes, beta_column, render_options):
         if beta_column is None:
-            raise ValueError("当前图表需要选择变量")
+            raise ValueError("当前图表需要选择统计量字段")
         time_column = ChartFactory._resolve_time_column(dataset, render_options)
         category_column = ChartFactory._resolve_category_column(dataset, render_options)
         coefficients = ChartFactory._filtered_coefficients(dataset, render_options, apply_time_slice=False)
@@ -610,8 +651,9 @@ class ChartFactory:
         axes.set_yticklabels(y_tick_labels, rotation=90, ha="right", fontsize=8)
         axes.set_xlabel(str(time_column), labelpad=16)
         axes.set_ylabel(str(category_column), labelpad=20)
-        axes.set_zlabel(beta_column.removeprefix("beta_"), labelpad=10)
-        axes.set_title(ChartFactory._title(render_options, f"{beta_column.removeprefix('beta_')} 的时间-分类 3D 图"))
+        metric_label = VisualizationData.metric_display_name(beta_column)
+        axes.set_zlabel(metric_label, labelpad=10)
+        axes.set_title(ChartFactory._title(render_options, f"{metric_label} 时间-分类 3D 图"))
         axes.set_box_aspect(ChartFactory._box_aspect(render_options))
         axes.view_init(elev=10, azim=-35)
         axes.zaxis.set_major_formatter(FuncFormatter(ChartFactory._formatter_fn(render_options)))
@@ -625,7 +667,7 @@ class ChartFactory:
             shrink=0.45,
             aspect=20,
             pad=0.1,
-            label=ChartFactory._legend_label(render_options, beta_column.removeprefix("beta_")),
+            label=ChartFactory._legend_label(render_options, metric_label),
             format=ChartFactory._colorbar_format(render_options),
         )
 
