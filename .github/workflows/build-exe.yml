@@ -30,7 +30,7 @@ jobs:
       - name: Build with Nuitka
         uses: Nuitka/Nuitka-Action@main
         with:
-          nuitka-version: main
+          # nuitka-version: main
           script-name: main.py  # 修改为你的主脚本文件名
           onefile: true
           mingw64: true
