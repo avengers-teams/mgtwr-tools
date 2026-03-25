@@ -193,6 +193,20 @@ class MGRWRAnalysisPage(QWidget):
         variable_layout.addWidget(self.coords_count_label, 3, 3, alignment=Qt.AlignRight)
         variable_layout.addWidget(self.coords_clear_button, 4, 3, alignment=Qt.AlignRight)
 
+        append_label = QLabel("追加字段（导出到 coefficients）")
+        self.append_fields_list = ModernListWidget()
+        self.append_fields_list.setSelectionMode(QListWidget.MultiSelection)
+        self.append_fields_list.setMinimumHeight(180)
+        self.append_fields_list.itemSelectionChanged.connect(self.update_selection_counts)
+        self.append_fields_count_label = QLabel("已选 0 项")
+        self.append_fields_count_label.setStyleSheet("color: #64748b;")
+        self.append_fields_clear_button = TransparentPushButton("清空已选")
+        self.append_fields_clear_button.clicked.connect(lambda: self.clear_list_selection(self.append_fields_list))
+        variable_layout.addWidget(append_label, 5, 0)
+        variable_layout.addWidget(self.append_fields_list, 5, 1, 1, 3)
+        variable_layout.addWidget(self.append_fields_count_label, 6, 3, alignment=Qt.AlignRight)
+        variable_layout.addWidget(self.append_fields_clear_button, 7, 3, alignment=Qt.AlignRight)
+
         for column in range(4):
             variable_layout.setColumnStretch(column, 1)
         main_layout.addWidget(variable_group)
@@ -285,6 +299,7 @@ class MGRWRAnalysisPage(QWidget):
         self.y_combo.clear()
         self.x_list.clear()
         self.coords_list.clear()
+        self.append_fields_list.clear()
         self.time_combo.clear()
 
         self.y_combo.addItems(headers)
@@ -292,11 +307,13 @@ class MGRWRAnalysisPage(QWidget):
         for header in headers:
             self.x_list.addItem(QListWidgetItem(header))
             self.coords_list.addItem(QListWidgetItem(header))
+            self.append_fields_list.addItem(QListWidgetItem(header))
         self.update_selection_counts()
 
     def update_selection_counts(self):
         self.x_count_label.setText(f"已选 {len(self.x_list.selectedItems())} 项")
         self.coords_count_label.setText(f"已选 {len(self.coords_list.selectedItems())} 项")
+        self.append_fields_count_label.setText(f"已选 {len(self.append_fields_list.selectedItems())} 项")
 
     def clear_list_selection(self, list_widget):
         list_widget.clearSelection()
@@ -356,6 +373,7 @@ class MGRWRAnalysisPage(QWidget):
 
         missing_strategy = self.current_missing_strategy()
         params["missing_strategy"] = missing_strategy
+        params["append_original_fields"] = [item.text() for item in self.append_fields_list.selectedItems()]
         if missing_strategy == "fill":
             try:
                 params["missing_fill_value"] = self.parse_missing_fill_value()

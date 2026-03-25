@@ -5,18 +5,20 @@ import matplotlib
 import numpy as np
 import pandas as pd
 from matplotlib import colormaps
+from matplotlib import text as mtext
 from matplotlib.figure import Figure
 from matplotlib.patches import Patch
+from matplotlib.ticker import FuncFormatter
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
-matplotlib.rcParams["font.sans-serif"] = [
-    "Microsoft YaHei UI",
+DEFAULT_FONT_FALLBACKS = [
     "Microsoft YaHei",
-    "SimHei",
-    "Noto Sans CJK SC",
-    "Arial Unicode MS",
-    "DejaVu Sans",
+    "SimSun",
+    "Times New Roman",
 ]
+
+matplotlib.rcParams["font.family"] = DEFAULT_FONT_FALLBACKS
+matplotlib.rcParams["font.sans-serif"] = DEFAULT_FONT_FALLBACKS
 matplotlib.rcParams["axes.unicode_minus"] = False
 
 TEMPORAL_MODELS = {"GTWR", "MGTWR"}
@@ -43,6 +45,16 @@ class RenderOptions:
     time_value: str | None = None
     category_column: str | None = None
     decimal_places: int = 4
+    font_family: str | None = None
+    figure_title: str | None = None
+    legend_label: str | None = None
+    time_slot_width: int = 2
+    category_slot_width: int = 2
+    figure_width: float = 8.0
+    figure_height: float = 5.0
+    x_box_aspect: float = 1.0
+    y_box_aspect: float = 3.0
+    z_box_aspect: float = 1.0
 
 
 class VisualizationData:
@@ -102,12 +114,93 @@ class VisualizationData:
         columns = list(self.coefficients.columns)
         first_beta_index = next((i for i, c in enumerate(columns) if str(c).startswith("beta_")), len(columns))
         self._metadata_columns = columns[:first_beta_index]
-        if self._metadata_columns:
-            self.target_column = self._metadata_columns[0]
-        if len(self._metadata_columns) >= 3:
-            self.coord_columns = self._metadata_columns[1:3]
-        if self.model in TEMPORAL_MODELS and len(self._metadata_columns) >= 4:
-            self.time_column = self._metadata_columns[3]
+        if not self._metadata_columns:
+            return
+
+        self.target_column = self._infer_target_column()
+        self.coord_columns = self._infer_coord_columns()
+        if self.model in TEMPORAL_MODELS:
+            self.time_column = self._infer_time_column()
+
+    def _infer_target_column(self):
+        explicit_names = {"actual", "observed", "target", "真实值", "实际值", "因变量"}
+        for column in self._metadata_columns:
+            normalized = str(column).strip().lower()
+            if normalized in explicit_names:
+                return column
+
+        excluded = set(self._infer_named_coord_columns() + ([self._infer_named_time_column()] if self._infer_named_time_column() else []))
+        candidates = []
+        for column in self._metadata_columns:
+            if str(column).startswith("Original_") or column in excluded:
+                continue
+            numeric_ratio = pd.to_numeric(self.coefficients[column], errors="coerce").notna().mean()
+            if numeric_ratio >= 0.8:
+                candidates.append(column)
+
+        if candidates:
+            non_temporal = [column for column in candidates if not self._looks_temporal(self.coefficients[column])]
+            return non_temporal[0] if non_temporal else candidates[0]
+
+        for column in self._metadata_columns:
+            if not str(column).startswith("Original_"):
+                return column
+        return self._metadata_columns[0]
+
+    def _infer_coord_columns(self):
+        named_columns = self._infer_named_coord_columns()
+        if len(named_columns) == 2:
+            return named_columns
+
+        excluded = {self.target_column}
+        time_column = self._infer_named_time_column()
+        if time_column:
+            excluded.add(time_column)
+
+        numeric_candidates = []
+        for column in self._metadata_columns:
+            if column in excluded or str(column).startswith("Original_"):
+                continue
+            if pd.to_numeric(self.coefficients[column], errors="coerce").notna().mean() >= 0.8:
+                numeric_candidates.append(column)
+
+        return numeric_candidates[:2]
+
+    def _infer_time_column(self):
+        named_column = self._infer_named_time_column()
+        if named_column:
+            return named_column
+
+        excluded = set(self.coord_columns)
+        if self.target_column:
+            excluded.add(self.target_column)
+        for column in self._metadata_columns:
+            if column in excluded or str(column).startswith("Original_"):
+                continue
+            if self._looks_temporal(self.coefficients[column]):
+                return column
+        return None
+
+    def _infer_named_coord_columns(self):
+        lon_keywords = ("lon", "lng", "long", "经度")
+        lat_keywords = ("lat", "纬度")
+        lon_column = None
+        lat_column = None
+        for column in self._metadata_columns:
+            normalized = str(column).strip().lower()
+            if lon_column is None and any(keyword in normalized for keyword in lon_keywords):
+                lon_column = column
+            elif lat_column is None and any(keyword in normalized for keyword in lat_keywords):
+                lat_column = column
+        return [column for column in (lon_column, lat_column) if column is not None]
+
+    def _infer_named_time_column(self):
+        time_keywords = ("year", "年份", "time", "date", "日期", "时间")
+        for column in self._metadata_columns:
+            normalized = str(column).strip().lower()
+            if any(keyword in normalized for keyword in time_keywords):
+                return column
+        return None
 
     def has_spatial(self):
         return len(self.coord_columns) == 2 and all(column in self.coefficients.columns for column in self.coord_columns)
@@ -242,6 +335,7 @@ class VisualizationData:
 class ChartFactory:
     REGIONAL_CHARTS = {"regional_residual_map", "regional_coefficient_map"}
     SPATIAL_CHARTS = {"residual_spatial", "regional_residual_map", "coefficient_spatial", "regional_coefficient_map"}
+    COLORMAP_CHARTS = SPATIAL_CHARTS | {"coefficient_3d"}
     TIME_SLICE_CHARTS = {
         "predicted_actual",
         "residual_histogram",
@@ -256,29 +350,37 @@ class ChartFactory:
 
     @classmethod
     def create_figure(cls, dataset, chart_key, beta_column=None, render_options=None):
-        figure = Figure(figsize=(8, 5), tight_layout=True, facecolor="white")
-        axes = figure.add_subplot(111, projection="3d") if chart_key == "coefficient_3d" else figure.add_subplot(111)
-        axes.set_facecolor("#fbfcfe")
-        builders = {
-            "predicted_actual": cls._plot_predicted_actual,
-            "residual_histogram": cls._plot_residual_histogram,
-            "residual_spatial": cls._plot_residual_spatial,
-            "regional_residual_map": cls._plot_regional_residual_map,
-            "coefficient_distribution": cls._plot_coefficient_distribution,
-            "coefficient_spatial": cls._plot_coefficient_spatial,
-            "regional_coefficient_map": cls._plot_regional_coefficient_map,
-            "coefficient_temporal": cls._plot_coefficient_temporal,
-            "coefficient_3d": cls._plot_coefficient_3d,
-            "search_scores": cls._plot_search_scores,
-            "bandwidth_history": cls._plot_bandwidth_history,
-            "tau_history": cls._plot_tau_history,
-            "final_scales": cls._plot_final_scales,
+        rc_params = {
+            "font.family": cls._font_family_chain(render_options),
+            "font.sans-serif": cls._font_family_chain(render_options),
+            "axes.unicode_minus": False,
         }
-        builder = builders.get(chart_key)
-        if builder is None:
-            raise ValueError(f"不支持的图表类型: {chart_key}")
-        builder(dataset, axes, beta_column, render_options)
-        return figure
+        with matplotlib.rc_context(rc=rc_params):
+            figure = Figure(figsize=cls._figure_size(render_options), tight_layout=chart_key != "coefficient_3d", facecolor="white")
+            axes = figure.add_subplot(111, projection="3d") if chart_key == "coefficient_3d" else figure.add_subplot(111)
+            axes.set_facecolor("#fbfcfe")
+            builders = {
+                "predicted_actual": cls._plot_predicted_actual,
+                "residual_histogram": cls._plot_residual_histogram,
+                "residual_spatial": cls._plot_residual_spatial,
+                "regional_residual_map": cls._plot_regional_residual_map,
+                "coefficient_distribution": cls._plot_coefficient_distribution,
+                "coefficient_spatial": cls._plot_coefficient_spatial,
+                "regional_coefficient_map": cls._plot_regional_coefficient_map,
+                "coefficient_temporal": cls._plot_coefficient_temporal,
+                "coefficient_3d": cls._plot_coefficient_3d,
+                "search_scores": cls._plot_search_scores,
+                "bandwidth_history": cls._plot_bandwidth_history,
+                "tau_history": cls._plot_tau_history,
+                "final_scales": cls._plot_final_scales,
+            }
+            builder = builders.get(chart_key)
+            if builder is None:
+                raise ValueError(f"不支持的图表类型: {chart_key}")
+            builder(dataset, axes, beta_column, render_options)
+            cls._apply_font_family(figure, render_options)
+            cls._apply_figure_layout(figure, chart_key)
+            return figure
 
     @classmethod
     def chart_requires_spatial_options(cls, chart_key):
@@ -300,6 +402,10 @@ class ChartFactory:
     def chart_uses_category_column(cls, chart_key):
         return chart_key in cls.CATEGORY_CHARTS
 
+    @classmethod
+    def chart_uses_colormap(cls, chart_key):
+        return chart_key in cls.COLORMAP_CHARTS
+
     @staticmethod
     def _plot_predicted_actual(dataset, axes, _beta_column, render_options):
         coefficients = ChartFactory._filtered_coefficients(dataset, render_options, apply_time_slice=True)
@@ -312,10 +418,11 @@ class ChartFactory:
         min_value = min(x.min(), y.min())
         max_value = max(x.max(), y.max())
         axes.plot([min_value, max_value], [min_value, max_value], linestyle="--", color="#c42b1c", linewidth=1.4)
-        axes.set_title("实际值 vs 预测值")
+        axes.set_title(ChartFactory._title(render_options, "实际值 vs 预测值"))
         axes.set_xlabel("实际值")
         axes.set_ylabel("预测值")
         axes.grid(alpha=0.18)
+        ChartFactory._apply_decimal_formatters(axes, render_options, ("x", "y"))
 
     @staticmethod
     def _plot_residual_histogram(dataset, axes, _beta_column, render_options):
@@ -330,9 +437,9 @@ class ChartFactory:
             color="#c42b1c",
             linestyle="--",
             linewidth=1.4,
-            label=f"均值 {ChartFactory._format_number(residuals.mean(), decimals)}",
+            label=f"{ChartFactory._legend_label(render_options, '均值')} {ChartFactory._format_number(residuals.mean(), decimals)}",
         )
-        axes.set_title("残差分布")
+        axes.set_title(ChartFactory._title(render_options, "残差分布"))
         axes.set_xlabel("残差")
         axes.set_ylabel("频数")
         axes.grid(axis="y", alpha=0.18)
@@ -349,20 +456,21 @@ class ChartFactory:
             numeric[x_col],
             numeric[y_col],
             c=numeric["residual"],
-            cmap="coolwarm",
+            cmap=ChartFactory._colormap_name(render_options),
             s=36,
             alpha=0.9,
             edgecolors="none",
         )
-        axes.set_title("残差空间分布")
+        axes.set_title(ChartFactory._title(render_options, "残差空间分布"))
         axes.set_xlabel(str(x_col))
         axes.set_ylabel(str(y_col))
         axes.grid(alpha=0.18)
-        axes.figure.colorbar(scatter, ax=axes, shrink=0.9, label="残差", format=ChartFactory._colorbar_format(render_options))
+        axes.figure.colorbar(scatter, ax=axes, shrink=0.9, label=ChartFactory._legend_label(render_options, "残差"), format=ChartFactory._colorbar_format(render_options))
+        ChartFactory._apply_decimal_formatters(axes, render_options, ("x", "y"))
 
     @classmethod
     def _plot_regional_residual_map(cls, dataset, axes, _beta_column, render_options):
-        cls._plot_regional_map(dataset, axes, "residual", "残差", "残差区域着色图", render_options)
+        cls._plot_regional_map(dataset, axes, "residual", "残差", ChartFactory._title(render_options, "残差区域着色图"), render_options)
 
     @staticmethod
     def _plot_coefficient_distribution(dataset, axes, beta_column, render_options):
@@ -379,13 +487,14 @@ class ChartFactory:
             color="#c42b1c",
             linestyle="--",
             linewidth=1.4,
-            label=f"均值 {ChartFactory._format_number(values.mean(), decimals)}",
+            label=f"{ChartFactory._legend_label(render_options, '均值')} {ChartFactory._format_number(values.mean(), decimals)}",
         )
-        axes.set_title(f"{beta_column.removeprefix('beta_')} 的局部系数分布")
+        axes.set_title(ChartFactory._title(render_options, f"{beta_column.removeprefix('beta_')} 的局部系数分布"))
         axes.set_xlabel("系数")
         axes.set_ylabel("频数")
         axes.grid(axis="y", alpha=0.18)
         axes.legend(frameon=False)
+        ChartFactory._apply_decimal_formatters(axes, render_options, ("x",))
 
     @staticmethod
     def _plot_coefficient_spatial(dataset, axes, beta_column, render_options):
@@ -400,22 +509,23 @@ class ChartFactory:
             numeric[x_col],
             numeric[y_col],
             c=numeric[beta_column],
-            cmap="viridis",
+            cmap=ChartFactory._colormap_name(render_options),
             s=36,
             alpha=0.9,
             edgecolors="none",
         )
-        axes.set_title(f"{beta_column.removeprefix('beta_')} 的空间分布")
+        axes.set_title(ChartFactory._title(render_options, f"{beta_column.removeprefix('beta_')} 的空间分布"))
         axes.set_xlabel(str(x_col))
         axes.set_ylabel(str(y_col))
         axes.grid(alpha=0.18)
-        axes.figure.colorbar(scatter, ax=axes, shrink=0.9, label="局部系数", format=ChartFactory._colorbar_format(render_options))
+        axes.figure.colorbar(scatter, ax=axes, shrink=0.9, label=ChartFactory._legend_label(render_options, "局部系数"), format=ChartFactory._colorbar_format(render_options))
+        ChartFactory._apply_decimal_formatters(axes, render_options, ("x", "y"))
 
     @classmethod
     def _plot_regional_coefficient_map(cls, dataset, axes, beta_column, render_options):
         if beta_column is None:
             raise ValueError("当前图表需要选择变量")
-        cls._plot_regional_map(dataset, axes, beta_column, beta_column.removeprefix("beta_"), f"{beta_column.removeprefix('beta_')} 区域着色图", render_options)
+        cls._plot_regional_map(dataset, axes, beta_column, beta_column.removeprefix("beta_"), ChartFactory._title(render_options, f"{beta_column.removeprefix('beta_')} 区域着色图"), render_options)
 
     @staticmethod
     def _plot_coefficient_temporal(dataset, axes, beta_column, render_options):
@@ -429,10 +539,14 @@ class ChartFactory:
         grouped = numeric.groupby(time_column, sort=False)[beta_column].mean().reset_index()
         grouped = ChartFactory._sort_frame_by_time(grouped, time_column)
         axes.plot(grouped[time_column], grouped[beta_column], color="#0f6cbd", linewidth=2.0, marker="o")
-        axes.set_title(f"{beta_column.removeprefix('beta_')} 的时间趋势")
+        axes.set_title(ChartFactory._title(render_options, f"{beta_column.removeprefix('beta_')} 的时间趋势"))
         axes.set_xlabel(str(time_column))
         axes.set_ylabel("平均局部系数")
         axes.grid(alpha=0.18)
+        if pd.to_numeric(grouped[time_column], errors="coerce").notna().all():
+            ChartFactory._apply_decimal_formatters(axes, render_options, ("x", "y"))
+        else:
+            ChartFactory._apply_decimal_formatters(axes, render_options, ("y",))
 
     @staticmethod
     def _plot_coefficient_3d(dataset, axes, beta_column, render_options):
@@ -449,13 +563,16 @@ class ChartFactory:
             raise ValueError("当前结果中没有可用于 3D 图的数据")
 
         time_numeric = pd.to_numeric(data[time_column], errors="coerce")
-        if time_numeric.notna().any():
+        if time_numeric.notna().all():
             data["__time__"] = time_numeric
         else:
             time_as_datetime = pd.to_datetime(data[time_column].astype(str), errors="coerce", format="mixed")
-            if not time_as_datetime.notna().any():
-                raise ValueError("所选时间列无法转换为可绘制的时间轴")
-            data["__time__"] = time_as_datetime.map(pd.Timestamp.toordinal)
+            if time_as_datetime.notna().all():
+                data["__time__"] = time_as_datetime.map(pd.Timestamp.toordinal)
+            else:
+                categories = data[time_column].astype(str).astype("category")
+                slot_width = max(1, int(render_options.time_slot_width)) if render_options is not None else 2
+                data["__time__"] = categories.cat.codes * slot_width
 
         category_numeric = pd.to_numeric(data[category_column], errors="coerce")
         if category_numeric.notna().all():
@@ -464,7 +581,8 @@ class ChartFactory:
             y_tick_labels = [VisualizationData.format_display_value(value) for value in y_tick_positions]
         else:
             categories = data[category_column].astype("category")
-            data["__category__"] = categories.cat.codes * 2
+            slot_width = max(1, int(render_options.category_slot_width)) if render_options is not None else 2
+            data["__category__"] = categories.cat.codes * slot_width
             y_tick_positions = data["__category__"].drop_duplicates().tolist()
             y_tick_labels = [str(value) for value in categories.cat.categories]
 
@@ -473,7 +591,7 @@ class ChartFactory:
             data["__category__"],
             data[beta_column],
             c=data[beta_column],
-            cmap="viridis",
+            cmap=ChartFactory._colormap_name(render_options),
             linewidths=0.8,
             marker="o",
         )
@@ -493,15 +611,21 @@ class ChartFactory:
         axes.set_xlabel(str(time_column), labelpad=16)
         axes.set_ylabel(str(category_column), labelpad=20)
         axes.set_zlabel(beta_column.removeprefix("beta_"), labelpad=10)
-        axes.set_title(f"{beta_column.removeprefix('beta_')} 的时间-分类 3D 图")
+        axes.set_title(ChartFactory._title(render_options, f"{beta_column.removeprefix('beta_')} 的时间-分类 3D 图"))
+        axes.set_box_aspect(ChartFactory._box_aspect(render_options))
         axes.view_init(elev=10, azim=-35)
+        axes.zaxis.set_major_formatter(FuncFormatter(ChartFactory._formatter_fn(render_options)))
+        if pd.to_numeric(data[time_column], errors="coerce").notna().all():
+            axes.xaxis.set_major_formatter(FuncFormatter(ChartFactory._formatter_fn(render_options)))
+        if pd.to_numeric(data[category_column], errors="coerce").notna().all():
+            axes.yaxis.set_major_formatter(FuncFormatter(ChartFactory._formatter_fn(render_options)))
         axes.figure.colorbar(
             scatter,
             ax=axes,
             shrink=0.45,
             aspect=20,
             pad=0.1,
-            label=beta_column.removeprefix("beta_"),
+            label=ChartFactory._legend_label(render_options, beta_column.removeprefix("beta_")),
             format=ChartFactory._colorbar_format(render_options),
         )
 
@@ -509,7 +633,7 @@ class ChartFactory:
     def _plot_search_scores(dataset, axes, _beta_column, _render_options):
         score_series = dataset.search_scores.iloc[:, 0]
         axes.plot(range(1, len(score_series) + 1), score_series, color="#0f6cbd", linewidth=2.0)
-        axes.set_title("搜索评分曲线")
+        axes.set_title(ChartFactory._title(_render_options, "搜索评分曲线"))
         axes.set_xlabel("迭代步")
         axes.set_ylabel("评分")
         axes.grid(alpha=0.18)
@@ -520,7 +644,7 @@ class ChartFactory:
         history.columns = [f"bw_{index + 1}" for index in range(history.shape[1])]
         for column in history.columns:
             axes.plot(range(1, len(history) + 1), history[column], linewidth=1.6, label=column)
-        axes.set_title("带宽迭代历史")
+        axes.set_title(ChartFactory._title(_render_options, "带宽迭代历史"))
         axes.set_xlabel("迭代步")
         axes.set_ylabel("带宽")
         axes.grid(alpha=0.18)
@@ -532,7 +656,7 @@ class ChartFactory:
         history.columns = [f"tau_{index + 1}" for index in range(history.shape[1])]
         for column in history.columns:
             axes.plot(range(1, len(history) + 1), history[column], linewidth=1.6, label=column)
-        axes.set_title("时空尺度迭代历史")
+        axes.set_title(ChartFactory._title(_render_options, "时空尺度迭代历史"))
         axes.set_xlabel("迭代步")
         axes.set_ylabel("时空尺度")
         axes.grid(alpha=0.18)
@@ -554,7 +678,7 @@ class ChartFactory:
             axes.bar([p + width / 2 for p in positions[:len(taus)]], taus, width=width, label="时空尺度", color="#8764b8")
         axes.set_xticks(positions[:count])
         axes.set_xticklabels(labels[:count], rotation=25, ha="right")
-        axes.set_title("最终尺度参数")
+        axes.set_title(ChartFactory._title(render_options, "最终尺度参数"))
         axes.set_ylabel("参数值")
         axes.grid(axis="y", alpha=0.18)
         axes.legend(frameon=False)
@@ -775,6 +899,81 @@ class ChartFactory:
     @staticmethod
     def _colorbar_format(render_options):
         return f"%.{ChartFactory._decimals(render_options)}f"
+
+    @staticmethod
+    def _colormap_name(render_options):
+        if render_options is not None and render_options.palette:
+            return render_options.palette
+        return "viridis"
+
+    @staticmethod
+    def _box_aspect(render_options):
+        if render_options is None:
+            return [1, 3, 1]
+        return [
+            max(0.1, float(render_options.x_box_aspect)),
+            max(0.1, float(render_options.y_box_aspect)),
+            max(0.1, float(render_options.z_box_aspect)),
+        ]
+
+    @staticmethod
+    def _figure_size(render_options):
+        if render_options is None:
+            return (8.0, 5.0)
+        return (
+            max(1.0, float(render_options.figure_width)),
+            max(1.0, float(render_options.figure_height)),
+        )
+
+    @staticmethod
+    def _formatter_fn(render_options):
+        decimals = ChartFactory._decimals(render_options)
+        return lambda value, _pos: f"{float(value):.{decimals}f}"
+
+    @staticmethod
+    def _apply_decimal_formatters(axes, render_options, axis_names):
+        formatter = FuncFormatter(ChartFactory._formatter_fn(render_options))
+        if "x" in axis_names:
+            axes.xaxis.set_major_formatter(formatter)
+        if "y" in axis_names:
+            axes.yaxis.set_major_formatter(formatter)
+        if "z" in axis_names and hasattr(axes, "zaxis"):
+            axes.zaxis.set_major_formatter(formatter)
+
+    @staticmethod
+    def _apply_font_family(figure, render_options):
+        font_families = ChartFactory._font_family_chain(render_options)
+        for text in figure.findobj(match=lambda artist: isinstance(artist, mtext.Text)):
+            text.set_fontfamily(font_families)
+
+    @staticmethod
+    def _font_family_chain(render_options):
+        preferred = []
+        if render_options is not None and render_options.font_family:
+            preferred.append(render_options.font_family)
+        preferred.extend(DEFAULT_FONT_FALLBACKS)
+        ordered = []
+        for family in preferred:
+            if family and family not in ordered:
+                ordered.append(family)
+        return ordered
+
+    @staticmethod
+    def _apply_figure_layout(figure, chart_key):
+        if chart_key == "coefficient_3d":
+            figure.subplots_adjust(left=0.08, right=0.9, bottom=0.14, top=0.9)
+
+    @staticmethod
+    def _title(render_options, default):
+        if render_options is not None and render_options.figure_title:
+            return render_options.figure_title
+        return default
+
+    @staticmethod
+    def _legend_label(render_options, default):
+        if render_options is not None and render_options.legend_label:
+            return render_options.legend_label
+        return default
 
     @staticmethod
     def _jenks_breaks(values, class_count):

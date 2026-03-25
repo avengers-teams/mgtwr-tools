@@ -265,7 +265,7 @@ class DataAnalysis:
 
     def export_results(self, model, result, search_result, params, kernel, fixed, criterion):
         summary_df = pd.DataFrame(self.build_summary_rows(model, result, search_result, params, kernel, fixed, criterion))
-        coefficient_df = self.build_coefficients_frame(result)
+        coefficient_df = self.build_coefficients_frame(result, params)
 
         with pd.ExcelWriter(self.output_path, engine="openpyxl") as writer:
             summary_df.to_excel(writer, sheet_name="summary", index=False)
@@ -307,7 +307,7 @@ class DataAnalysis:
             rows.append({"item": f"search_{key}", "value": self.stringify(value)})
         return rows
 
-    def build_coefficients_frame(self, result):
+    def build_coefficients_frame(self, result, params=None):
         variable_names = ["Intercept"] + self.x_columns
         data = {}
 
@@ -336,7 +336,28 @@ class DataAnalysis:
             coefficient_df.insert(len(self.coord_columns), self.t_columns[0], self.t.iloc[:, 0].values)
 
         coefficient_df.insert(0, self.y_columns[0], self.y.iloc[:, 0].values)
-        return coefficient_df
+        return self.append_original_fields_to_coefficients(coefficient_df, params or {})
+
+    def append_original_fields_to_coefficients(self, coefficient_df, params):
+        original_fields = params.get("append_original_fields") or []
+        original_fields = [field for field in original_fields if field in self.excel_data.columns]
+        if not original_fields:
+            return coefficient_df
+
+        source = self.excel_data[self.coord_columns + original_fields].copy()
+        duplicate_mask = source.duplicated(subset=self.coord_columns, keep=False)
+        if duplicate_mask.any():
+            duplicate_count = int(source.loc[duplicate_mask, self.coord_columns].drop_duplicates().shape[0])
+            print(f"检测到 {duplicate_count} 组重复经纬度，追加字段时将按经纬度保留首条记录匹配")
+            source = source.drop_duplicates(subset=self.coord_columns, keep="first")
+
+        rename_map = {field: f"Original_{field}" for field in original_fields}
+        source = source.rename(columns=rename_map)
+        merged = coefficient_df.merge(source, on=self.coord_columns, how="left")
+
+        prefixed_columns = [rename_map[field] for field in original_fields if rename_map[field] in merged.columns]
+        remaining_columns = [column for column in merged.columns if column not in prefixed_columns]
+        return merged[prefixed_columns + remaining_columns]
 
     def write_search_sheets(self, writer, search_result):
         if "scores" in search_result and search_result["scores"] is not None:
