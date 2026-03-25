@@ -1,248 +1,381 @@
+import json
+from abc import ABC, abstractmethod
+from contextlib import nullcontext
+
 import pandas as pd
-from mgtwr.model import GTWR, MGTWR, GTWRResults
-from mgtwr.sel import SearchGTWRParameter
-from mgtwr.model import GTWR
-from mgtwr.sel import SearchMGTWRParameter
-from mgtwr.model import MGTWR
+from joblib import parallel_backend
+from mgtwr.model import GWR, GTWR, MGWR, MGTWR
+from mgtwr.sel import (
+    SearchGTWRParameter,
+    SearchGWRParameter,
+    SearchMGTWRParameter,
+    SearchMGWRParameter,
+)
+from utils.dataframe_loader import ExcelDataLoader
+
+
+class BaseAnalysisStrategy(ABC):
+    model_name = ""
+
+    def build_common_kwargs(self, params, kernel, fixed):
+        return {
+            "kernel": kernel,
+            "fixed": fixed,
+            "constant": params.get("constant", True),
+            "thread": params.get("thread", 1),
+            "convert": params.get("convert", False),
+        }
+
+    def get_parallel_context(self, params):
+        thread_count = params.get("thread", 1)
+        if isinstance(thread_count, int) and thread_count > 1:
+            return parallel_backend("threading", n_jobs=thread_count)
+        return nullcontext()
+
+    @abstractmethod
+    def fit(self, analysis, kernel, fixed, criterion, params):
+        pass
+
+
+class GWRStrategy(BaseAnalysisStrategy):
+    model_name = "GWR"
+
+    def fit(self, analysis, kernel, fixed, criterion, params):
+        common_kwargs = self.build_common_kwargs(params, kernel, fixed)
+        with self.get_parallel_context(params):
+            selector = SearchGWRParameter(analysis.coords, analysis.x, analysis.y, **common_kwargs)
+            bw = selector.search(
+                criterion=criterion,
+                bw_min=params.get("bw_min"),
+                bw_max=params.get("bw_max"),
+                tol=params.get("tol", 1.0e-6),
+                bw_decimal=params.get("bw_decimal", 1),
+                max_iter=params.get("max_iter", 200),
+                verbose=params.get("verbose", False),
+                time_cost=params.get("time_cost", False),
+            )
+            result = GWR(analysis.coords, analysis.x, analysis.y, bw, **common_kwargs).fit()
+        return result, {"bw": bw}
+
+
+class MGWRStrategy(BaseAnalysisStrategy):
+    model_name = "MGWR"
+
+    def fit(self, analysis, kernel, fixed, criterion, params):
+        common_kwargs = self.build_common_kwargs(params, kernel, fixed)
+        with self.get_parallel_context(params):
+            selector = SearchMGWRParameter(analysis.coords, analysis.x, analysis.y, **common_kwargs)
+            search_result = selector.search(
+                criterion=criterion,
+                bw_min=params.get("bw_min"),
+                bw_max=params.get("bw_max"),
+                tol=params.get("tol", 1.0e-6),
+                bw_decimal=params.get("bw_decimal", 1),
+                init_bw=params.get("init_bw"),
+                multi_bw_min=params.get("multi_bw_min"),
+                multi_bw_max=params.get("multi_bw_max"),
+                tol_multi=params.get("tol_multi", 1.0e-5),
+                bws_same_times=params.get("bws_same_times", 5),
+                verbose=params.get("verbose", False),
+                rss_score=params.get("rss_score", False),
+                time_cost=params.get("time_cost", False),
+            )
+            result = MGWR(
+                analysis.coords,
+                analysis.x,
+                analysis.y,
+                selector,
+                **common_kwargs,
+            ).fit(
+                n_chunks=params.get("n_chunks", 1),
+                skip_calculate=params.get("skip_calculate", False),
+            )
+        return result, {
+            "bws": analysis.to_serializable(search_result[0]),
+            "bws_history": analysis.to_serializable(search_result[1]),
+            "scores": analysis.to_serializable(search_result[2]),
+            "bw_init": search_result[5],
+        }
+
+
+class GTWRStrategy(BaseAnalysisStrategy):
+    model_name = "GTWR"
+
+    def fit(self, analysis, kernel, fixed, criterion, params):
+        common_kwargs = self.build_common_kwargs(params, kernel, fixed)
+        with self.get_parallel_context(params):
+            selector = SearchGTWRParameter(analysis.coords, analysis.t, analysis.x, analysis.y, **common_kwargs)
+            bw, tau = selector.search(
+                criterion=criterion,
+                bw_min=params.get("bw_min"),
+                bw_max=params.get("bw_max"),
+                tau_min=params.get("tau_min"),
+                tau_max=params.get("tau_max"),
+                tol=params.get("tol", 1.0e-6),
+                bw_decimal=params.get("bw_decimal", 1),
+                tau_decimal=params.get("tau_decimal", 1),
+                max_iter=params.get("max_iter", 200),
+                verbose=params.get("verbose", False),
+                time_cost=params.get("time_cost", False),
+            )
+            result = GTWR(
+                analysis.coords,
+                analysis.t,
+                analysis.x,
+                analysis.y,
+                bw,
+                tau,
+                **common_kwargs,
+            ).fit()
+        return result, {"bw": bw, "tau": tau}
+
+
+class MGTWRStrategy(BaseAnalysisStrategy):
+    model_name = "MGTWR"
+
+    def fit(self, analysis, kernel, fixed, criterion, params):
+        common_kwargs = self.build_common_kwargs(params, kernel, fixed)
+        with self.get_parallel_context(params):
+            selector = SearchMGTWRParameter(analysis.coords, analysis.t, analysis.x, analysis.y, **common_kwargs)
+            search_result = selector.search(
+                criterion=criterion,
+                bw_min=params.get("bw_min"),
+                bw_max=params.get("bw_max"),
+                tau_min=params.get("tau_min"),
+                tau_max=params.get("tau_max"),
+                tol=params.get("tol", 1.0e-6),
+                bw_decimal=params.get("bw_decimal", 1),
+                tau_decimal=params.get("tau_decimal", 1),
+                init_bw=params.get("init_bw"),
+                init_tau=params.get("init_tau"),
+                multi_bw_min=params.get("multi_bw_min"),
+                multi_bw_max=params.get("multi_bw_max"),
+                multi_tau_min=params.get("multi_tau_min"),
+                multi_tau_max=params.get("multi_tau_max"),
+                tol_multi=params.get("tol_multi", 1.0e-5),
+                verbose=params.get("verbose", False),
+                rss_score=params.get("rss_score", False),
+                time_cost=params.get("time_cost", False),
+            )
+            result = MGTWR(
+                analysis.coords,
+                analysis.t,
+                analysis.x,
+                analysis.y,
+                selector,
+                **common_kwargs,
+            ).fit(
+                n_chunks=params.get("n_chunks", 1),
+                skip_calculate=params.get("skip_calculate", False),
+            )
+        return result, {
+            "bws": analysis.to_serializable(search_result[0]),
+            "taus": analysis.to_serializable(search_result[1]),
+            "bws_history": analysis.to_serializable(search_result[2]),
+            "taus_history": analysis.to_serializable(search_result[3]),
+            "scores": analysis.to_serializable(search_result[4]),
+            "bw_init": search_result[7],
+            "tau_init": search_result[8],
+        }
+
+
+class AnalysisStrategyFactory:
+    _strategies = {
+        GWRStrategy.model_name: GWRStrategy(),
+        MGWRStrategy.model_name: MGWRStrategy(),
+        GTWRStrategy.model_name: GTWRStrategy(),
+        MGTWRStrategy.model_name: MGTWRStrategy(),
+    }
+
+    @classmethod
+    def get_strategy(cls, model_name):
+        strategy = cls._strategies.get(model_name.upper())
+        if strategy is None:
+            raise ValueError(f"不支持的模型: {model_name}")
+        return strategy
 
 
 class DataAnalysis:
     def __init__(self, input_path, output_path):
         self.file_path = input_path
-        self.excel_data = self.get_xlsx_data(input_path)
         self.output_path = output_path
+        self.excel_data = self.get_xlsx_data(input_path)
         self.x = None
         self.y = None
         self.t = None
         self.coords = None
+        self.x_columns = []
+        self.y_columns = []
+        self.t_columns = []
+        self.coord_columns = []
+        self.cleaning_stats = {}
 
     @staticmethod
     def get_xlsx_data(path):
-        """
-        获取数据
-        :param path: 文件路径
-        :return:
-        """
-        data = pd.read_excel(path)
-        return data
+        return ExcelDataLoader.load_excel(path)
 
-    def get_headers(self):
-        """
-        获取表头
-        """
-        return self.excel_data.columns.tolist()
+    def set_variables(self, x, y, t, coords, missing_strategy="drop", missing_fill_value=None):
+        self.x_columns = x
+        self.y_columns = y or []
+        self.t_columns = t or []
+        self.coord_columns = coords
 
-    # 获取自变量,因变量, 时间变量, 坐标变量
-    def set_variables(self, x: list, y: list, t: list, coords: list):
-        """
-        设置自变量:x,因变量:y, 时间变量:t, 坐标变量:coords
-        """
+        self.excel_data, self.cleaning_stats = ExcelDataLoader.coerce_analysis_columns(
+            self.excel_data,
+            x_columns=x,
+            y_columns=y,
+            coord_columns=coords,
+            time_columns=t or [],
+            missing_strategy=missing_strategy,
+            missing_fill_value=missing_fill_value,
+            return_stats=True,
+        )
         self.x = self.excel_data[x]
-        self.y = self.excel_data[y]
-        self.t = self.excel_data[t]
+        self.y = self.excel_data[y] if y else None
+        self.t = self.excel_data[t] if t else None
         self.coords = self.excel_data[coords]
-        print("自变量:", self.x)
-        print("因变量:", self.y)
-        print("时间变量:", self.t)
-        print("坐标变量:", self.coords)
+        print(f"自变量列: {x}，样本数: {len(self.x)}")
+        print(f"因变量列: {self.y_columns}")
+        print(f"时间变量列: {self.t_columns}")
+        print(f"坐标变量列: {coords}")
+        self.print_cleaning_summary()
 
-    def gtwr(self, kernel: str,
-             fixed: bool,
-             criterion: str = 'AICc',
-             bw_min: float = None,
-             bw_max: float = None,
-             tau_min: float = None,
-             tau_max: float = None,
-             tol: float = 1.0e-6,
-             bw_decimal: int = 1,
-             tau_decimal: int = 1,
-             max_iter: int = 200, ):
-        """
-        选择GTWR模型的一个唯一带宽和时空尺度的方法。
+    def print_cleaning_summary(self):
+        missing_rows = int(self.cleaning_stats.get("missing_rows", 0))
+        if missing_rows <= 0:
+            print("所选字段未检测到空值")
+            return
 
-        参数
-        ----------
-        kernel         : string
-                         使用的核函数类型，用于加权观测值；
-                         可用选项：
-                         'gaussian'（高斯核）
-                         'bisquare'（双平方核）
-                         'exponential'（指数核）
-        fixed          : bool
-                         True表示基于距离的核函数（默认），False表示自适应（基于最近邻）的核函数
-        criterion      : string
-                         带宽选择准则：'AICc'（修正赤池信息准则）、'AIC'（赤池信息准则）、'BIC'（贝叶斯信息准则）、'CV'（交叉验证）
-        bw_min         : float
-                         带宽搜索的最小值
-        bw_max         : float
-                         带宽搜索的最大值
-        tau_min        : float
-                         时空尺度搜索的最小值
-        tau_max        : float
-                         时空尺度搜索的最大值
-        tol            : float
-                         确定收敛所使用的容差
-        max_iter       : integer
-                         如果没有达到收敛，则最大迭代次数
-        bw_decimal     : scalar
-                         带宽搜索时保存的小数位数
-        tau_decimal    : scalar
-                         时空尺度搜索时保存的小数位数
-        """
-        # 输出传入的参数
-        for key, value in locals().items():
-            if key != 'self':
-                print(f"{key}: {value}")
-        # 带宽选择
-        sel = SearchGTWRParameter(self.coords, self.t, self.x, self.y, kernel=kernel, fixed=fixed)
-        bw, tau = sel.search(verbose=True, time_cost=True, criterion=criterion, bw_min=bw_min, bw_max=bw_max,
-                             tau_min=tau_min, tau_max=tau_max, tol=tol, max_iter=max_iter, bw_decimal=bw_decimal,
-                             tau_decimal=tau_decimal)
-        gtwr = GTWR(self.coords, self.t, self.x, self.y, bw, tau, kernel=kernel, fixed=fixed).fit()
-        print(gtwr.R2)
+        strategy = self.cleaning_stats.get("missing_strategy")
+        if strategy == "drop":
+            removed = int(self.cleaning_stats.get("rows_removed", 0))
+            print(f"检测到 {missing_rows} 行在所选字段中包含空值，已忽略 {removed} 行")
+        elif strategy == "fill":
+            filled_cells = int(self.cleaning_stats.get("filled_cells", 0))
+            fill_value = self.cleaning_stats.get("missing_fill_value")
+            print(f"检测到 {missing_rows} 行在所选字段中包含空值，已使用 {fill_value} 填充 {filled_cells} 个单元格")
 
-        print("R平方值:", gtwr.R2)
-        print("AIC值:", gtwr.aic)
-        print("AICc值:", gtwr.aicc)
-        print("BIC值:", gtwr.bic)
-        print("有效参数数 (ENP) 值:", gtwr.ENP)
-        print("迹 (tr_S) 值:", gtwr.tr_S)
-        print("调整后的R平方值:", gtwr.adj_R2)
-        print("残差平方和 (RSS) 值:", gtwr.RSS)
-        print("模型自由度 (df_model) 值:", gtwr.df_model)
-        print("sigma2值:", gtwr.sigma2)
-        print("回归系数 (betas) 值:", gtwr.betas)
-        self.output_betas(gtwr.betas)
+    def run_model(self, model, kernel, fixed, criterion, params):
+        strategy = AnalysisStrategyFactory.get_strategy(model)
+        result, search_result = strategy.fit(self, kernel, fixed, criterion, params)
+        model_name = strategy.model_name
+        self.print_summary(model_name, result, search_result)
+        self.export_results(model_name, result, search_result, params, kernel, fixed, criterion)
+        return result
 
+    def export_results(self, model, result, search_result, params, kernel, fixed, criterion):
+        summary_df = pd.DataFrame(self.build_summary_rows(model, result, search_result, params, kernel, fixed, criterion))
+        coefficient_df = self.build_coefficients_frame(result)
 
-    def mgtwr(self, kernel: str,
-              fixed: bool,
-              criterion: str = 'AICc',
-              bw_min: float = None,
-              bw_max: float = None,
-              tau_min: float = None,
-              tau_max: float = None,
-              tol: float = 1.0e-6,
-              bw_decimal: int = 1,
-              tau_decimal: int = 1,
-              init_bw: float = None,
-              init_tau: float = None,
-              multi_bw_min: list = None,
-              multi_bw_max: list = None,
-              multi_tau_min: list = None,
-              multi_tau_max: list = None,
-              tol_multi: float = 1.0e-5,
-              rss_score: bool = False,
-              ):
-        """
-        为GTWR模型选择唯一带宽和时空尺度，或为MGTWR模型选择带宽向量和时空尺度向量的方法。
+        with pd.ExcelWriter(self.output_path, engine="openpyxl") as writer:
+            summary_df.to_excel(writer, sheet_name="summary", index=False)
+            coefficient_df.to_excel(writer, sheet_name="coefficients", index=False)
 
-        参数
-        ----------
-        kernel          : string
-                          核函数类型，用于加权观测值；
-                          可用选项：
-                          'gaussian'（高斯核）
-                          'bisquare'（双平方核）
-                          'exponential'（指数核）
+            settings_df = pd.DataFrame(
+                [{"parameter": key, "value": self.stringify(value)} for key, value in params.items()]
+            )
+            settings_df.to_excel(writer, sheet_name="settings", index=False)
 
-        fixed           : bool
-                          True表示基于距离的核函数，False表示自适应（基于最近邻）的核函数（默认）
+            self.write_search_sheets(writer, search_result)
 
-        criterion       : string
-                          带宽选择准则：'AICc'（修正赤池信息准则）、'AIC'（赤池信息准则）、'BIC'（贝叶斯信息准则）、'CV'（交叉验证）
+        print(f"分析结果已输出至 {self.output_path}")
 
-        bw_min          : float
-                          带宽搜索的最小值
+    def build_summary_rows(self, model, result, search_result, params, kernel, fixed, criterion):
+        rows = [
+            {"item": "model", "value": model},
+            {"item": "kernel", "value": kernel},
+            {"item": "fixed", "value": fixed},
+            {"item": "criterion", "value": criterion},
+            {"item": "thread", "value": params.get("thread", 1)},
+            {"item": "constant", "value": params.get("constant", True)},
+            {"item": "convert", "value": params.get("convert", False)},
+            {"item": "samples", "value": len(self.x)},
+            {"item": "variables", "value": len(self.x_columns)},
+        ]
 
-        bw_max          : float
-                          带宽搜索的最大值
+        metric_names = [
+            "R2", "adj_R2", "RSS", "sigma2", "aic", "aicc", "aic_c", "bic",
+            "ENP", "tr_S", "df_model", "df_reside", "llf",
+        ]
+        for name in metric_names:
+            if hasattr(result, name):
+                rows.append({"item": name, "value": self.stringify(getattr(result, name))})
 
-        tau_min         : float
-                          时空尺度搜索的最小值
+        for key, value in search_result.items():
+            if key.endswith("_history"):
+                continue
+            rows.append({"item": f"search_{key}", "value": self.stringify(value)})
+        return rows
 
-        tau_max         : float
-                          时空尺度搜索的最大值
+    def build_coefficients_frame(self, result):
+        variable_names = ["Intercept"] + self.x_columns
+        data = {}
 
-        multi_bw_min    : list
-                          在MGTWR带宽搜索中，每个协变量的最小值。可以是单个值，也可以为每个协变量（包括截距）提供一个值
+        for index, column_name in enumerate(variable_names):
+            data[f"beta_{column_name}"] = result.betas[:, index]
 
-        multi_bw_max    : list
-                          在MGTWR带宽搜索中，每个协变量的最大值。可以是单个值，也可以为每个协变量（包括截距）提供一个值
+        if hasattr(result, "bse"):
+            for index, column_name in enumerate(variable_names):
+                data[f"se_{column_name}"] = result.bse[:, index]
 
-        multi_tau_min   : list
-                          在MGTWR时空尺度搜索中，每个协变量的最小值。可以是单个值，也可以为每个协变量（包括截距）提供一个值
+        t_matrix = getattr(result, "tvalues", None)
+        if t_matrix is None:
+            t_matrix = getattr(result, "t_values", None)
+        if t_matrix is not None:
+            for index, column_name in enumerate(variable_names):
+                data[f"t_{column_name}"] = t_matrix[:, index]
 
-        multi_tau_max   : list
-                          在MGTWR时空尺度搜索中，每个协变量的最大值。可以是单个值，也可以为每个协变量（包括截距）提供一个值
+        data["predicted"] = result.predict_value.reshape(-1)
+        data["residual"] = result.reside.reshape(-1)
 
-        tol             : float
-                          确定收敛所使用的容差
+        coefficient_df = pd.DataFrame(data)
+        for idx, column in enumerate(self.coord_columns):
+            coefficient_df.insert(idx, column, self.coords.iloc[:, idx].values)
 
-        bw_decimal      : int
-                          带宽搜索时保留的小数位数
+        if self.t is not None and self.t_columns:
+            coefficient_df.insert(len(self.coord_columns), self.t_columns[0], self.t.iloc[:, 0].values)
 
-        tau_decimal     : int
-                          时空尺度搜索时保留的小数位数
+        coefficient_df.insert(0, self.y_columns[0], self.y.iloc[:, 0].values)
+        return coefficient_df
 
-        init_bw         : float
-                          初始化MGTWR时使用的带宽，默认从GTWR派生，否则可以手动指定
+    def write_search_sheets(self, writer, search_result):
+        if "scores" in search_result and search_result["scores"] is not None:
+            pd.DataFrame({"score": self.flatten(search_result["scores"])}).to_excel(
+                writer, sheet_name="search_scores", index=False
+            )
 
-        init_tau        : float
-                          初始化MGTWR时使用的时空尺度，默认从GTWR派生，否则可以手动指定
+        if "bws_history" in search_result and search_result["bws_history"] is not None:
+            pd.DataFrame(search_result["bws_history"]).to_excel(writer, sheet_name="bw_history", index=False)
 
-        tol_multi       : float
-                          多带宽回归算法的收敛容差；较大的容差可能会加快算法停止，但可能会导致次优模型
+        if "taus_history" in search_result and search_result["taus_history"] is not None:
+            pd.DataFrame(search_result["taus_history"]).to_excel(writer, sheet_name="tau_history", index=False)
 
-        rss_score      : bool
-                         如果为 True，则在每次多带宽回归算法的迭代中使用残差平方和（RSS）来评估结果；
-                         如果为 False，则使用一个平滑函数来进行评估；默认值为 False。
+    def print_summary(self, model, result, search_result):
+        print(f"{model} 拟合完成")
+        for key, value in search_result.items():
+            if key.endswith("_history"):
+                continue
+            print(f"{key}: {self.stringify(value)}")
 
-    """
-        for key, value in locals().items():
-            if key != 'self':
-                print(f"{key}: {value}")
-        selector = SearchMGTWRParameter(self.coords, self.t, self.x, self.y, kernel=kernel, fixed=fixed)
-        bws = selector.search(verbose=True, time_cost=True, criterion=criterion, bw_min=bw_min, bw_max=bw_max,
-                              tau_min=tau_min, tau_max=tau_max, tol=tol, bw_decimal=bw_decimal, tau_decimal=tau_decimal,
-                              init_bw=init_bw, init_tau=init_tau, multi_bw_min=multi_bw_min, multi_bw_max=multi_bw_max,
-                              multi_tau_min=multi_tau_min, multi_tau_max=multi_tau_max, tol_multi=tol_multi,
-                              rss_score=rss_score)
-        print("选择的带宽:", bws)
-        # 拟合MGTWR模型
-        mgtwr_model = MGTWR(self.coords, self.t, self.x, self.y, selector, kernel=kernel, fixed=fixed)
-        mgtwr_results = mgtwr_model.fit()
+        for metric in ["R2", "adj_R2", "aic", "aicc", "aic_c", "bic", "ENP", "RSS", "sigma2"]:
+            if hasattr(result, metric):
+                print(f"{metric}: {self.stringify(getattr(result, metric))}")
 
-        # 输出结果
-        print("R平方值:", mgtwr_results.R2)
-        print("AIC值:", mgtwr_results.aic)
-        print("AICc值:", mgtwr_results.aic_c)
-        print("BIC值:", mgtwr_results.bic)
-        print("有效参数数 (ENP) 值:", mgtwr_results.ENP)
-        print("迹 (tr_S) 值:", mgtwr_results.tr_S)
-        print("调整后的R平方值:", mgtwr_results.adj_R2)
-        print("残差平方和 (RSS) 值:", mgtwr_results.RSS)
-        print("模型自由度 (df_model) 值:", mgtwr_results.df_model)
-        print("sigma2值:", mgtwr_results.sigma2)
-        print("回归系数 (betas) 值:", mgtwr_results.betas)
-        self.output_betas(mgtwr_results.betas)
+    def flatten(self, value):
+        if hasattr(value, "ravel"):
+            return value.ravel().tolist()
+        if isinstance(value, list):
+            return value
+        return [value]
 
-    # 输出回归系数的xlsx
-    def output_betas(self, betas):
-        """
-        输出回归系数到xlsx文件，包含自变量名称，并将经纬度和年份信息也添加到表中。
-        :param betas: 回归系数矩阵
-        """
-        # 从 self.x 的列名中获取自变量名称
-        variable_names = ['Intercept'] + self.x.columns.tolist()
-        # 创建 DataFrame 并设置表头
-        df_betas = pd.DataFrame(betas, columns=variable_names)
-        # 添加经纬度和年份信息
-        df_betas['Longitude'] = self.coords.iloc[:, 1]  # 经度
-        df_betas['Latitude'] = self.coords.iloc[:, 0]  # 纬度
-        df_betas['Year'] = self.t  # 年份
+    def to_serializable(self, value):
+        if hasattr(value, "tolist"):
+            return value.tolist()
+        return value
 
-        # 输出到 Excel 文件
-        df_betas.to_excel(self.output_path, index=False)
-        print(f"回归系数表输出至 {self.output_path}")
-
+    def stringify(self, value):
+        if isinstance(value, (list, dict, tuple)):
+            return json.dumps(value, ensure_ascii=False)
+        if hasattr(value, "tolist"):
+            return json.dumps(value.tolist(), ensure_ascii=False)
+        return value

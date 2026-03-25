@@ -1,310 +1,266 @@
-from PyQt5.QtGui import QIntValidator, QDoubleValidator
-from PyQt5.QtWidgets import QLabel, QLineEdit, QHBoxLayout, QCheckBox, QSpinBox
+import os
+
+from PyQt5.QtWidgets import QFormLayout, QGroupBox
+
+from views.components.input import ModernCheckBox, ModernLineEdit, ModernSpinBox
 
 
-def creat_gtwr_param_box(param_layout):
-    # GTWR 参数
-
-    # 收敛公差
-    tol_label = QLabel("收敛公差")
-    tol_input = QLineEdit()
-    tol_input.setToolTip("控制模型收敛的公差（默认值为1.0e-6）")
-    tol_input.setText("1.0e-6")
-    tol_layout = QHBoxLayout()
-    tol_layout.addWidget(tol_label)
-    tol_layout.addWidget(tol_input)
-
-    # 最大迭代次数
-    max_iter_label = QLabel("最大迭代次数")
-    max_iter_input = QLineEdit()
-    max_iter_input.setToolTip("模型的最大迭代次数（默认值为200）")
-    max_iter_input.setText("200")
-    # 设置只能输入整数
-    max_iter_input.setValidator(QIntValidator(1, 1000))
-    max_iter_layout = QHBoxLayout()
-    max_iter_layout.addWidget(max_iter_label)
-    max_iter_layout.addWidget(max_iter_input)
-
-    # 带宽小数点精度
-    bw_decimal_label = QLabel("带宽精度")
-    bw_decimal_input = QLineEdit()
-    bw_decimal_input.setToolTip("指定带宽的小数点精度（默认值为1）")
-    bw_decimal_input.setText("1")
-    # 设置只能输入整数
-    bw_decimal_input.setValidator(QIntValidator(0, 10))
-    bw_decimal_layout = QHBoxLayout()
-    bw_decimal_layout.addWidget(bw_decimal_label)
-    bw_decimal_layout.addWidget(bw_decimal_input)
-
-    # 时空尺度小数点精度
-    tau_decimal_label = QLabel("时空尺度精度")
-    tau_decimal_input = QLineEdit()
-    tau_decimal_input.setToolTip("指定时空尺度的小数点精度（默认值为1）")
-    tau_decimal_input.setText("1")
-    # 设置只能输入整数
-    tau_decimal_input.setValidator(QIntValidator(0, 10))
-    tau_decimal_layout = QHBoxLayout()
-    tau_decimal_layout.addWidget(tau_decimal_label)
-    tau_decimal_layout.addWidget(tau_decimal_input)
-
-    # 将所有参数放入一个水平布局
-    param_combined_layout = QHBoxLayout()
-    param_combined_layout.addLayout(tol_layout)
-    param_combined_layout.addLayout(max_iter_layout)
-    param_combined_layout.addLayout(bw_decimal_layout)
-    param_combined_layout.addLayout(tau_decimal_layout)
-    param_layout.addLayout(param_combined_layout)
-
-    # 带宽最小值
-    bw_min_label = QLabel("带宽最小值")
-    bw_min_input = QLineEdit()
-    bw_min_input.setToolTip("模型使用的带宽最小值")
-    # 设置只能输入浮点数
-    bw_min_input.setValidator(QDoubleValidator(0.0, 9999.9, 3))
-    bw_min_layout = QHBoxLayout()
-    bw_min_layout.addWidget(bw_min_label)
-    bw_min_layout.addWidget(bw_min_input)
-
-    # 带宽最大值
-    bw_max_label = QLabel("带宽最大值")
-    bw_max_input = QLineEdit()
-    bw_max_input.setToolTip("模型使用的带宽最大值")
-    # 设置只能输入浮点数
-    bw_max_input.setValidator(QDoubleValidator(0.0, 9999.9, 3))
-    bw_max_layout = QHBoxLayout()
-    bw_max_layout.addWidget(bw_max_label)
-    bw_max_layout.addWidget(bw_max_input)
-
-    # 将带宽布局添加到主布局
-    bw_combined_layout = QHBoxLayout()
-    bw_combined_layout.addLayout(bw_min_layout)
-    bw_combined_layout.addLayout(bw_max_layout)
-    param_layout.addLayout(bw_combined_layout)
-
-    # 时空尺度最小值
-    tau_min_label = QLabel("时空尺度最小值")
-    tau_min_input = QLineEdit()
-    tau_min_input.setToolTip("模型使用的时空尺度最小值")
-    # 设置只能输入浮点数
-    tau_min_input.setValidator(QDoubleValidator(0.0, 9999.9, 3))
-    tau_min_layout = QHBoxLayout()
-    tau_min_layout.addWidget(tau_min_label)
-    tau_min_layout.addWidget(tau_min_input)
-
-    # 时空尺度最大值
-    tau_max_label = QLabel("时空尺度最大值")
-    tau_max_input = QLineEdit()
-    tau_max_input.setToolTip("模型使用的时空尺度最大值")
-    # 设置只能输入浮点数
-    tau_max_input.setValidator(QDoubleValidator(0.0, 9999.9, 3))
-    tau_max_layout = QHBoxLayout()
-    tau_max_layout.addWidget(tau_max_label)
-    tau_max_layout.addWidget(tau_max_input)
-
-    # 将时空尺度布局添加到主布局
-    tau_combined_layout = QHBoxLayout()
-    tau_combined_layout.addLayout(tau_min_layout)
-    tau_combined_layout.addLayout(tau_max_layout)
-    param_layout.addLayout(tau_combined_layout)
-
-    # 保存动态输入的引用
-    return {
-        'bw_min': bw_min_input,
-        'bw_max': bw_max_input,
-        'tau_min': tau_min_input,
-        'tau_max': tau_max_input,
-        'tol': tol_input,
-        'bw_decimal': bw_decimal_input,
-        'tau_decimal': tau_decimal_input,
-        'max_iter': max_iter_input,
-    }
+def _create_line_edit(tooltip="", placeholder="", text=""):
+    input_box = ModernLineEdit()
+    if tooltip:
+        input_box.setToolTip(tooltip)
+    if placeholder:
+        input_box.setPlaceholderText(placeholder)
+    if text:
+        input_box.setText(text)
+    return input_box
 
 
-def creat_mgtwr_param_box(param_layout):
-    # MGTWR 参数
-    # 收敛公差 (tol)
-    tol_label = QLabel("收敛公差")
-    tol_input = QLineEdit()
-    tol_input.setToolTip("控制模型收敛的公差（默认值为1.0e-6）")
-    tol_input.setText("1.0e-6")
-    tol_layout = QHBoxLayout()
-    tol_layout.addWidget(tol_label)
-    tol_layout.addWidget(tol_input)
+def _create_spin_box(minimum=0, maximum=999999, value=0, tooltip=""):
+    input_box = ModernSpinBox()
+    input_box.setRange(minimum, maximum)
+    input_box.setValue(value)
+    if tooltip:
+        input_box.setToolTip(tooltip)
+    return input_box
 
-    # 带宽搜索收敛公差 (tol_multi)
-    tol_multi_label = QLabel("多带宽算法收敛公差")
-    tol_multi_input = QLineEdit()
-    tol_multi_input.setToolTip("控制多带宽算法收敛的公差（默认值为1.0e-5）")
-    tol_multi_input.setText("1.0e-5")
-    tol_multi_layout = QHBoxLayout()
-    tol_multi_layout.addWidget(tol_multi_label)
-    tol_multi_layout.addWidget(tol_multi_input)
 
-    # 残差平方和评价标准 (rss_score)
-    rss_score_label = QLabel("使用残差平方和")
-    rss_score_input = QCheckBox()
-    rss_score_layout = QHBoxLayout()
-    rss_score_layout.addWidget(rss_score_label)
-    rss_score_layout.addWidget(rss_score_input)
+def _create_check_box(text="", checked=False, tooltip=""):
+    input_box = ModernCheckBox(text)
+    input_box.setChecked(checked)
+    if tooltip:
+        input_box.setToolTip(tooltip)
+    return input_box
 
-    tol_tol_multi_combined_layout = QHBoxLayout()
-    tol_tol_multi_combined_layout.addLayout(tol_layout)
-    tol_tol_multi_combined_layout.addLayout(tol_multi_layout)
-    tol_tol_multi_combined_layout.addLayout(rss_score_layout)
-    param_layout.addLayout(tol_tol_multi_combined_layout)
 
-    # 带宽小数位数 (bw_decimal)
-    bw_decimal_label = QLabel("带宽小数位数")
-    bw_decimal_input = QSpinBox()
-    bw_decimal_input.setMinimum(0)
-    bw_decimal_input.setMaximum(10)
-    bw_decimal_input.setValue(1)
-    bw_decimal_layout = QHBoxLayout()
-    bw_decimal_layout.addWidget(bw_decimal_label)
-    bw_decimal_layout.addWidget(bw_decimal_input)
+def _add_form_group(param_layout, title, rows):
+    group = QGroupBox(title)
+    form = QFormLayout(group)
+    for label, widget in rows:
+        form.addRow(label, widget)
+    param_layout.addWidget(group)
 
-    # 时空尺度小数位数 (tau_decimal)
-    tau_decimal_label = QLabel("时空尺度小数位数")
-    tau_decimal_input = QSpinBox()
-    tau_decimal_input.setMinimum(0)
-    tau_decimal_input.setMaximum(10)
-    tau_decimal_input.setValue(1)
-    tau_decimal_layout = QHBoxLayout()
-    tau_decimal_layout.addWidget(tau_decimal_label)
-    tau_decimal_layout.addWidget(tau_decimal_input)
 
-    # 带宽和时空尺度的小数位布局
-    decimal_combined_layout = QHBoxLayout()
-    decimal_combined_layout.addLayout(bw_decimal_layout)
-    decimal_combined_layout.addLayout(tau_decimal_layout)
-    param_layout.addLayout(decimal_combined_layout)
+def create_model_param_box(model, param_layout):
+    widgets = {}
+    cpu_count = max(1, os.cpu_count() or 1)
 
-    # bw
-    bw_min_label = QLabel("带宽最小值")
-    bw_min_input = QLineEdit()
-    bw_min_input.setToolTip("带宽搜索的最小值")
-    bw_min_input.setPlaceholderText("None")
-    bw_min_layout = QHBoxLayout()
-    bw_min_layout.addWidget(bw_min_label)
-    bw_min_layout.addWidget(bw_min_input)
+    widgets["thread"] = _create_spin_box(
+        minimum=1,
+        maximum=max(64, cpu_count),
+        value=min(4, cpu_count),
+        tooltip="并行线程数，过大不一定更快，通常建议 1 到 CPU 核心数之间",
+    )
+    widgets["constant"] = _create_check_box("包含截距项", checked=True, tooltip="对应模型中的 constant 参数")
+    widgets["convert"] = _create_check_box(
+        "将经纬度转换为平面坐标",
+        checked=False,
+        tooltip="当坐标列是真实经纬度时可启用，对应 convert 参数",
+    )
+    widgets["verbose"] = _create_check_box("输出搜索过程", checked=True, tooltip="对应 search 中的 verbose 参数")
+    widgets["time_cost"] = _create_check_box("输出耗时", checked=True, tooltip="对应 search 中的 time_cost 参数")
 
-    bw_max_label = QLabel("带宽最大值")
-    bw_max_input = QLineEdit()
-    bw_max_input.setToolTip("带宽搜索的最大值")
-    bw_max_input.setPlaceholderText("None")
-    bw_max_layout = QHBoxLayout()
-    bw_max_layout.addWidget(bw_max_label)
-    bw_max_layout.addWidget(bw_max_input)
-    # tau
-    tau_min_label = QLabel("时空尺度最小值")
-    tau_min_input = QLineEdit()
-    tau_min_input.setToolTip("时空尺度搜索的最小值")
-    tau_min_input.setPlaceholderText("None")
-    tau_min_layout = QHBoxLayout()
-    tau_min_layout.addWidget(tau_min_label)
-    tau_min_layout.addWidget(tau_min_input)
+    _add_form_group(
+        param_layout,
+        "通用设置",
+        [
+            ("线程数", widgets["thread"]),
+            ("", widgets["constant"]),
+            ("", widgets["convert"]),
+            ("", widgets["verbose"]),
+            ("", widgets["time_cost"]),
+        ],
+    )
 
-    tau_max_label = QLabel("时空尺度最大值")
-    tau_max_input = QLineEdit()
-    tau_max_input.setToolTip("时空尺度搜索的最大值")
-    tau_max_input.setPlaceholderText("None")
-    tau_max_layout = QHBoxLayout()
-    tau_max_layout.addWidget(tau_max_label)
-    tau_max_layout.addWidget(tau_max_input)
+    if model == "GWR":
+        _build_gwr_fields(param_layout, widgets)
+    elif model == "MGWR":
+        _build_mgwr_fields(param_layout, widgets)
+    elif model == "GTWR":
+        _build_gtwr_fields(param_layout, widgets)
+    elif model == "MGTWR":
+        _build_mgtwr_fields(param_layout, widgets)
 
-    bw_tau_combined_layout = QHBoxLayout()
-    bw_tau_combined_layout.addLayout(bw_min_layout)
-    bw_tau_combined_layout.addLayout(bw_max_layout)
-    bw_tau_combined_layout.addLayout(tau_min_layout)
-    bw_tau_combined_layout.addLayout(tau_max_layout)
-    param_layout.addLayout(bw_tau_combined_layout)
+    return widgets
 
-    # 多带宽最小值 (multi_bw_min)
-    multi_bw_min_label = QLabel("多带宽最小值")
-    multi_bw_min_input = QLineEdit()
-    multi_bw_min_input.setPlaceholderText('多个值用逗号分隔')
-    multi_bw_min_input.setToolTip("多带宽算法的带宽搜索范围,可以是多个值，用逗号分隔")
-    multi_bw_min_layout = QHBoxLayout()
-    multi_bw_min_layout.addWidget(multi_bw_min_label)
-    multi_bw_min_layout.addWidget(multi_bw_min_input)
 
-    # 多带宽最大值 (multi_bw_max)
-    multi_bw_max_label = QLabel("多带宽最大值")
-    multi_bw_max_input = QLineEdit()
-    multi_bw_max_input.setPlaceholderText('多个值用逗号分隔')
-    multi_bw_max_input.setToolTip("多带宽算法的带宽搜索范围,可以是多个值，用逗号分隔")
-    multi_bw_max_layout = QHBoxLayout()
-    multi_bw_max_layout.addWidget(multi_bw_max_label)
-    multi_bw_max_layout.addWidget(multi_bw_max_input)
+def _build_gwr_fields(param_layout, widgets):
+    widgets["tol"] = _create_line_edit(text="1.0e-6", tooltip="搜索收敛公差")
+    widgets["max_iter"] = _create_spin_box(minimum=1, maximum=100000, value=200, tooltip="最大迭代次数")
+    widgets["bw_decimal"] = _create_spin_box(minimum=0, maximum=10, value=1, tooltip="带宽小数位数")
+    _add_form_group(
+        param_layout,
+        "搜索控制",
+        [
+            ("收敛公差", widgets["tol"]),
+            ("最大迭代次数", widgets["max_iter"]),
+            ("带宽精度", widgets["bw_decimal"]),
+        ],
+    )
 
-    # 将两个多带宽的输入框放到一个总的水平布局中
-    multi_bw_combined_layout = QHBoxLayout()
-    multi_bw_combined_layout.addLayout(multi_bw_min_layout)
-    multi_bw_combined_layout.addLayout(multi_bw_max_layout)
-    param_layout.addLayout(multi_bw_combined_layout)
+    widgets["bw_min"] = _create_line_edit(placeholder="可留空", tooltip="带宽搜索最小值")
+    widgets["bw_max"] = _create_line_edit(placeholder="可留空", tooltip="带宽搜索最大值")
+    _add_form_group(
+        param_layout,
+        "带宽范围",
+        [
+            ("带宽最小值", widgets["bw_min"]),
+            ("带宽最大值", widgets["bw_max"]),
+        ],
+    )
 
-    # 多时空尺度最小值 (multi_tau_min)
-    multi_tau_min_label = QLabel("多时空尺度最小值")
-    multi_tau_min_input = QLineEdit()
-    multi_tau_min_input.setPlaceholderText('多个值用逗号分隔')
-    multi_tau_min_input.setToolTip("多带宽算法的时空尺度搜索范围,可以是多个值，用逗号分隔")
-    multi_tau_min_layout = QHBoxLayout()
-    multi_tau_min_layout.addWidget(multi_tau_min_label)
-    multi_tau_min_layout.addWidget(multi_tau_min_input)
 
-    # 多时空尺度最大值 (multi_tau_max)
-    multi_tau_max_label = QLabel("多时空尺度最大值")
-    multi_tau_max_input = QLineEdit()
-    multi_tau_max_input.setPlaceholderText('多个值用逗号分隔')
-    multi_tau_max_input.setToolTip("多带宽算法的时空尺度搜索范围,可以是多个值，用逗号分隔")
-    multi_tau_max_layout = QHBoxLayout()
-    multi_tau_max_layout.addWidget(multi_tau_max_label)
-    multi_tau_max_layout.addWidget(multi_tau_max_input)
+def _build_mgwr_fields(param_layout, widgets):
+    widgets["tol"] = _create_line_edit(text="1.0e-6", tooltip="带宽搜索收敛公差")
+    widgets["tol_multi"] = _create_line_edit(text="1.0e-5", tooltip="多带宽回归收敛公差")
+    widgets["bw_decimal"] = _create_spin_box(minimum=0, maximum=10, value=1, tooltip="带宽小数位数")
+    widgets["bws_same_times"] = _create_spin_box(
+        minimum=1,
+        maximum=100,
+        value=5,
+        tooltip="带宽连续多少次不变后停止回代",
+    )
+    widgets["rss_score"] = _create_check_box("使用 RSS 作为回代评分", checked=False)
+    _add_form_group(
+        param_layout,
+        "搜索控制",
+        [
+            ("收敛公差", widgets["tol"]),
+            ("多带宽收敛公差", widgets["tol_multi"]),
+            ("带宽精度", widgets["bw_decimal"]),
+            ("稳定次数阈值", widgets["bws_same_times"]),
+            ("", widgets["rss_score"]),
+        ],
+    )
 
-    # 将两个多时空尺度的输入框放到一个总的水平布局中
-    multi_tau_combined_layout = QHBoxLayout()
-    multi_tau_combined_layout.addLayout(multi_tau_min_layout)
-    multi_tau_combined_layout.addLayout(multi_tau_max_layout)
-    param_layout.addLayout(multi_tau_combined_layout)
+    widgets["bw_min"] = _create_line_edit(placeholder="可留空", tooltip="全局搜索带宽最小值")
+    widgets["bw_max"] = _create_line_edit(placeholder="可留空", tooltip="全局搜索带宽最大值")
+    widgets["init_bw"] = _create_line_edit(placeholder="可留空", tooltip="初始化带宽，为空则先从 GWR 派生")
+    widgets["multi_bw_min"] = _create_line_edit(placeholder="单个值或逗号分隔多个值", tooltip="每个变量的最小带宽")
+    widgets["multi_bw_max"] = _create_line_edit(placeholder="单个值或逗号分隔多个值", tooltip="每个变量的最大带宽")
+    _add_form_group(
+        param_layout,
+        "带宽设置",
+        [
+            ("带宽最小值", widgets["bw_min"]),
+            ("带宽最大值", widgets["bw_max"]),
+            ("初始带宽", widgets["init_bw"]),
+            ("多带宽最小值", widgets["multi_bw_min"]),
+            ("多带宽最大值", widgets["multi_bw_max"]),
+        ],
+    )
 
-    # 初始带宽 (init_bw)
-    init_bw_label = QLabel("初始带宽")
-    init_bw_input = QLineEdit()
-    init_bw_input.setPlaceholderText('一般为空')
-    init_bw_label.setToolTip("MGTWR模型的带宽，如果为空则从MGTWR模型派生")
-    init_bw_layout = QHBoxLayout()
-    init_bw_layout.addWidget(init_bw_label)
-    init_bw_layout.addWidget(init_bw_input)
+    widgets["n_chunks"] = _create_spin_box(minimum=1, maximum=256, value=1, tooltip="推断阶段分块数，越大越省内存")
+    widgets["skip_calculate"] = _create_check_box(
+        "跳过 CCT/ENP 等推断计算",
+        checked=False,
+        tooltip="更省时间和内存，但会少部分统计量",
+    )
+    _add_form_group(
+        param_layout,
+        "拟合阶段",
+        [
+            ("分块数", widgets["n_chunks"]),
+            ("", widgets["skip_calculate"]),
+        ],
+    )
 
-    # 初始时空尺度 (init_tau)
-    init_tau_label = QLabel("初始时空尺度")
-    init_tau_input = QLineEdit()
-    init_tau_input.setPlaceholderText('一般为空')
-    init_tau_label.setToolTip("MGTWR模型的时空尺度，如果为空则从MGTWR模型派生")
-    init_tau_layout = QHBoxLayout()
-    init_tau_layout.addWidget(init_tau_label)
-    init_tau_layout.addWidget(init_tau_input)
 
-    init_bw_tau_combined_layout = QHBoxLayout()
-    init_bw_tau_combined_layout.addLayout(init_bw_layout)
-    init_bw_tau_combined_layout.addLayout(init_tau_layout)
-    param_layout.addLayout(init_bw_tau_combined_layout)
+def _build_gtwr_fields(param_layout, widgets):
+    widgets["tol"] = _create_line_edit(text="1.0e-6", tooltip="搜索收敛公差")
+    widgets["max_iter"] = _create_spin_box(minimum=1, maximum=100000, value=200, tooltip="最大迭代次数")
+    widgets["bw_decimal"] = _create_spin_box(minimum=0, maximum=10, value=1, tooltip="带宽小数位数")
+    widgets["tau_decimal"] = _create_spin_box(minimum=0, maximum=10, value=1, tooltip="时空尺度小数位数")
+    _add_form_group(
+        param_layout,
+        "搜索控制",
+        [
+            ("收敛公差", widgets["tol"]),
+            ("最大迭代次数", widgets["max_iter"]),
+            ("带宽精度", widgets["bw_decimal"]),
+            ("时空尺度精度", widgets["tau_decimal"]),
+        ],
+    )
 
-    # 返回包含所有输入框的字典
-    return {
-        'bw_min': bw_min_input,
-        'bw_max': bw_max_input,
-        'tau_min': tau_min_input,
-        'tau_max': tau_max_input,
-        'multi_bw_min': multi_bw_min_input,
-        'multi_bw_max': multi_bw_max_input,
-        'multi_tau_min': multi_tau_min_input,
-        'multi_tau_max': multi_tau_max_input,
-        'tol': tol_input,
-        'bw_decimal': bw_decimal_input,
-        'tau_decimal': tau_decimal_input,
-        'init_bw': init_bw_input,
-        'init_tau': init_tau_input,
-        'tol_multi': tol_multi_input,
-        'rss_score': rss_score_input,
-    }
+    widgets["bw_min"] = _create_line_edit(placeholder="可留空", tooltip="带宽搜索最小值")
+    widgets["bw_max"] = _create_line_edit(placeholder="可留空", tooltip="带宽搜索最大值")
+    widgets["tau_min"] = _create_line_edit(placeholder="可留空", tooltip="时空尺度搜索最小值")
+    widgets["tau_max"] = _create_line_edit(placeholder="可留空", tooltip="时空尺度搜索最大值")
+    _add_form_group(
+        param_layout,
+        "时空范围",
+        [
+            ("带宽最小值", widgets["bw_min"]),
+            ("带宽最大值", widgets["bw_max"]),
+            ("时空尺度最小值", widgets["tau_min"]),
+            ("时空尺度最大值", widgets["tau_max"]),
+        ],
+    )
+
+
+def _build_mgtwr_fields(param_layout, widgets):
+    widgets["tol"] = _create_line_edit(text="1.0e-6", tooltip="带宽与时空尺度搜索收敛公差")
+    widgets["tol_multi"] = _create_line_edit(text="1.0e-5", tooltip="多带宽回代收敛公差")
+    widgets["bw_decimal"] = _create_spin_box(minimum=0, maximum=10, value=1, tooltip="带宽小数位数")
+    widgets["tau_decimal"] = _create_spin_box(minimum=0, maximum=10, value=1, tooltip="时空尺度小数位数")
+    widgets["rss_score"] = _create_check_box("使用 RSS 作为回代评分", checked=False)
+    _add_form_group(
+        param_layout,
+        "搜索控制",
+        [
+            ("收敛公差", widgets["tol"]),
+            ("多带宽收敛公差", widgets["tol_multi"]),
+            ("带宽精度", widgets["bw_decimal"]),
+            ("时空尺度精度", widgets["tau_decimal"]),
+            ("", widgets["rss_score"]),
+        ],
+    )
+
+    widgets["bw_min"] = _create_line_edit(placeholder="可留空", tooltip="带宽搜索最小值")
+    widgets["bw_max"] = _create_line_edit(placeholder="可留空", tooltip="带宽搜索最大值")
+    widgets["tau_min"] = _create_line_edit(placeholder="可留空", tooltip="时空尺度搜索最小值")
+    widgets["tau_max"] = _create_line_edit(placeholder="可留空", tooltip="时空尺度搜索最大值")
+    widgets["init_bw"] = _create_line_edit(placeholder="可留空", tooltip="初始带宽，为空则从 GTWR 派生")
+    widgets["init_tau"] = _create_line_edit(placeholder="可留空", tooltip="初始时空尺度，为空则从 GTWR 派生")
+    _add_form_group(
+        param_layout,
+        "单一搜索范围",
+        [
+            ("带宽最小值", widgets["bw_min"]),
+            ("带宽最大值", widgets["bw_max"]),
+            ("时空尺度最小值", widgets["tau_min"]),
+            ("时空尺度最大值", widgets["tau_max"]),
+            ("初始带宽", widgets["init_bw"]),
+            ("初始时空尺度", widgets["init_tau"]),
+        ],
+    )
+
+    widgets["multi_bw_min"] = _create_line_edit(placeholder="单个值或逗号分隔多个值", tooltip="每个变量的最小带宽")
+    widgets["multi_bw_max"] = _create_line_edit(placeholder="单个值或逗号分隔多个值", tooltip="每个变量的最大带宽")
+    widgets["multi_tau_min"] = _create_line_edit(placeholder="单个值或逗号分隔多个值", tooltip="每个变量的最小时空尺度")
+    widgets["multi_tau_max"] = _create_line_edit(placeholder="单个值或逗号分隔多个值", tooltip="每个变量的最大时空尺度")
+    _add_form_group(
+        param_layout,
+        "多尺度范围",
+        [
+            ("多带宽最小值", widgets["multi_bw_min"]),
+            ("多带宽最大值", widgets["multi_bw_max"]),
+            ("多时空尺度最小值", widgets["multi_tau_min"]),
+            ("多时空尺度最大值", widgets["multi_tau_max"]),
+        ],
+    )
+
+    widgets["n_chunks"] = _create_spin_box(minimum=1, maximum=256, value=1, tooltip="推断阶段分块数，越大越省内存")
+    widgets["skip_calculate"] = _create_check_box(
+        "跳过 CCT/ENP 等推断计算",
+        checked=False,
+        tooltip="更省时间和内存，但会少部分统计量",
+    )
+    _add_form_group(
+        param_layout,
+        "拟合阶段",
+        [
+            ("分块数", widgets["n_chunks"]),
+            ("", widgets["skip_calculate"]),
+        ],
+    )

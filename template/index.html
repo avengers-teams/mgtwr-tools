@@ -1,232 +1,317 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MGTWR 工具使用说明</title>
+    <style>
+        :root {
+            --bg: #f6f6f1;
+            --card: #ffffff;
+            --border: #d8dfd2;
+            --text: #243126;
+            --muted: #607064;
+            --accent: #5c7457;
+            --accent-soft: #ebf0e8;
+        }
 
-<!-- saved from url=(0092)file:///C:/Users/YZR/AppData/Local/Temp/onefile_16780_133754458522720627/template/index.html -->
-<html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"><style>body {
-   color: black;
-}
-</style></head><body><h3 id="-">公用参数解释与设置建议:</h3>
-<h4 id="1-kernel-">1. <strong><code>kernel</code></strong>（核函数类型）：</h4>
-<ul>
-<li><strong>类型</strong>：<code>string</code></li>
-<li><strong>作用</strong>：用于决定权重的计算方式，也就是如何根据空间或时空距离为观测点分配权重。</li>
-<li><p><strong>可选值</strong>：</p>
-<ul>
-<li><code>'gaussian'</code>：<strong>高斯核</strong>，通常在模型中使用较为平滑的权重分布。适合数据分布相对均匀的情况。</li>
-<li><code>'bisquare'</code>：<strong>双平方核</strong>，在较小的距离内给予较高的权重，距离较远时权重迅速降低。适合具有局部影响明显的数据。</li>
-<li><code>'exponential'</code>：<strong>指数核</strong>，权重随距离呈指数衰减。适用于模型对邻近区域影响较强的数据。</li>
-</ul>
-</li>
-<li><p><strong>选择建议</strong>：</p>
-<ul>
-<li><strong><code>'gaussian'</code></strong>：适合整体平滑的效果，适用于地理空间平滑变化的现象。</li>
-<li><strong><code>'bisquare'</code></strong>：适用于局部效应显著、远距离影响较小的情况。</li>
-<li><strong><code>'exponential'</code></strong>：适合快速衰减的空间效应，如某些地理扩散现象。</li>
-</ul>
-</li>
-</ul>
-<h4 id="2-fixed-">2. <strong><code>fixed</code></strong>（固定带宽或自适应带宽）：</h4>
-<ul>
-<li><strong>类型</strong>：<code>bool</code></li>
-<li><strong>作用</strong>：决定权重是基于距离（固定带宽）还是邻近度（自适应带宽）。</li>
-<li><p><strong>可选值</strong>：</p>
-<ul>
-<li><strong><code>True</code></strong>：<strong>基于距离的核函数（固定带宽）</strong>。带宽是一个固定的距离，模型根据空间距离加权观测点。适用于数据点分布较为均匀的情况。</li>
-<li><strong><code>False</code></strong>（默认）：<strong>自适应核函数（自适应带宽）</strong>。模型根据观测点的最近邻距离进行加权，适用于数据点密度不均的情况。在数据点密集的地方，带宽会变小，稀疏的地方带宽会变大。</li>
-</ul>
-</li>
-<li><p><strong>选择建议</strong>：</p>
-<ul>
-<li><strong><code>True</code>（固定带宽）</strong>：适合当你的数据分布相对均匀，并且希望带宽固定时使用。</li>
-<li><strong><code>False</code>（自适应带宽）</strong>：适合当数据点密度不均时，保证每个观测点都有足够的邻近点来参与计算。</li>
-</ul>
-</li>
-</ul>
-<h3 id="gtwr-">GTWR参数解释与设置建议：</h3>
-<ol>
-<li><p><strong>criterion</strong>（带宽选择准则）：</p>
-<ul>
-<li><strong>类型</strong>：<code>string</code></li>
-<li><strong>作用</strong>：用于选择带宽和时空尺度的评价标准。</li>
-<li><strong>可选值</strong>：<ul>
-<li><code>'AICc'</code>：赤池信息准则的修正版本，适用于小样本数据。</li>
-<li><code>'AIC'</code>：赤池信息准则，衡量模型拟合优度和复杂度。</li>
-<li><code>'BIC'</code>：贝叶斯信息准则，更严格地惩罚复杂模型，适用于大样本数据。</li>
-<li><code>'CV'</code>：交叉验证，通过最小化预测误差选择带宽。</li>
-</ul>
-</li>
-<li><strong>建议</strong>：<code>'AICc'</code> 通常是比较稳健的选择，特别适合数据量不大的情况。如果数据量较大，可以选择 <code>'AIC'</code> 或 <code>'BIC'</code>。</li>
-</ul>
-</li>
-<li><p><strong>bw_min</strong>（最小带宽）：</p>
-<ul>
-<li><strong>类型</strong>：<code>float</code></li>
-<li><strong>作用</strong>：用于带宽搜索的最小值，确保模型不会只考虑非常局部的空间数据。</li>
-<li><strong>设置建议</strong>：通常可以设为观测点数的 5%-10%，确保模型在较小空间范围内找到合适的带宽。</li>
-</ul>
-</li>
-<li><p><strong>bw_max</strong>（最大带宽）：</p>
-<ul>
-<li><strong>类型</strong>：<code>float</code></li>
-<li><strong>作用</strong>：用于带宽搜索的最大值，确保模型不会过于平滑。</li>
-<li><strong>设置建议</strong>：可以设置为观测点总数的 50%，允许模型在较大的空间范围内选择带宽。</li>
-</ul>
-</li>
-<li><p><strong>tau_min</strong>（最小时空尺度）：</p>
-<ul>
-<li><strong>类型</strong>：<code>float</code></li>
-<li><strong>作用</strong>：用于时空尺度搜索的最小值，防止模型在时间维度上过于细化。</li>
-<li><strong>设置建议</strong>：根据时间跨度，设为较小的时间间隔（如 1 年）。</li>
-</ul>
-</li>
-<li><p><strong>tau_max</strong>（最大时空尺度）：</p>
-<ul>
-<li><strong>类型</strong>：<code>float</code></li>
-<li><strong>作用</strong>：用于时空尺度搜索的最大值，防止模型在时间维度上过度平滑。</li>
-<li><strong>设置建议</strong>：可以设为时间跨度的 50% 左右，允许模型在更长的时间窗口上平滑。</li>
-</ul>
-</li>
-<li><p><strong>tol</strong>（收敛公差）：</p>
-<ul>
-<li><strong>类型</strong>：<code>float</code></li>
-<li><strong>作用</strong>：模型收敛的精度。较小的值会提高拟合精度，但可能增加计算时间。</li>
-<li><strong>设置建议</strong>：可以设为 <code>1e-5</code> 或 <code>1e-6</code>，以确保结果精确。</li>
-</ul>
-</li>
-<li><p><strong>max_iter</strong>（最大迭代次数）：</p>
-<ul>
-<li><strong>类型</strong>：<code>integer</code></li>
-<li><strong>作用</strong>：如果在指定的收敛公差下无法收敛，设置最大迭代次数。</li>
-<li><strong>设置建议</strong>：可以根据数据集大小设置为 100 或更多次，允许模型有足够的迭代次数来收敛。</li>
-</ul>
-</li>
-<li><p><strong>bw_decimal</strong>（带宽小数点精度）：</p>
-<ul>
-<li><strong>类型</strong>：<code>scalar</code></li>
-<li><strong>作用</strong>：带宽搜索过程中保留的带宽值的小数位数。</li>
-<li><strong>设置建议</strong>：通常保留 2 到 4 位小数。</li>
-</ul>
-</li>
-<li><p><strong>tau_decimal</strong>（时空尺度小数点精度）：</p>
-<ul>
-<li><strong>类型</strong>：<code>scalar</code></li>
-<li><strong>作用</strong>：时空尺度搜索过程中保留的小数位数。</li>
-<li><strong>设置建议</strong>：与 <code>bw_decimal</code> 一致，保留 2 到 4 位小数。</li>
-</ul>
-</li>
-</ol>
-<h3 id="mgtwr-">MGTWR参数解释与使用建议：</h3>
-<h4 id="1-criterion-">1. <strong>criterion</strong>（带宽选择准则）：</h4>
-<ul>
-<li><strong>类型</strong>：<code>string</code></li>
-<li><strong>作用</strong>：用于选择带宽和时空尺度的准则。</li>
-<li><strong>可选值</strong>：<ul>
-<li><code>'AICc'</code>：修正的赤池信息准则，适用于较小的数据集。</li>
-<li><code>'AIC'</code>：赤池信息准则，权衡模型的拟合优度和复杂性。</li>
-<li><code>'BIC'</code>：贝叶斯信息准则，更加严格惩罚复杂模型，适合大数据集。</li>
-<li><code>'CV'</code>：交叉验证，通过最小化预测误差选择带宽。</li>
-</ul>
-</li>
-<li><strong>建议</strong>：对于小样本数据，建议使用 <code>'AICc'</code>；大样本情况下，<code>'AIC'</code> 或 <code>'BIC'</code> 可以平衡模型复杂性与精度。</li>
-</ul>
-<h4 id="2-bw_min-">2. <strong>bw_min</strong>（最小带宽）：</h4>
-<ul>
-<li><strong>类型</strong>：<code>float</code></li>
-<li><strong>作用</strong>：搜索带宽时的最小值。</li>
-<li><strong>建议</strong>：通常设置为观测点总数的 5%-10%，以防止模型过度局部化。</li>
-</ul>
-<h4 id="3-bw_max-">3. <strong>bw_max</strong>（最大带宽）：</h4>
-<ul>
-<li><strong>类型</strong>：<code>float</code></li>
-<li><strong>作用</strong>：搜索带宽时的最大值。</li>
-<li><strong>建议</strong>：一般设置为 50% 左右，允许更大的空间范围，确保模型不会过度平滑。</li>
-</ul>
-<h4 id="4-tau_min-">4. <strong>tau_min</strong>（最小时空尺度）：</h4>
-<ul>
-<li><strong>类型</strong>：<code>float</code></li>
-<li><strong>作用</strong>：搜索时空尺度时的最小值。</li>
-<li><strong>建议</strong>：可以根据数据的时间范围设置，比如设为最小时间单位（如 1 年）。</li>
-</ul>
-<h4 id="5-tau_max-">5. <strong>tau_max</strong>（最大时空尺度）：</h4>
-<ul>
-<li><strong>类型</strong>：<code>float</code></li>
-<li><strong>作用</strong>：搜索时空尺度时的最大值。</li>
-<li><strong>建议</strong>：设为时间范围的较大部分（如 5 年），捕捉时间跨度更大的影响。</li>
-</ul>
-<h4 id="6-multi_bw_min-mgtwr-">6. <strong>multi_bw_min</strong>（MGTWR 各协变量的最小带宽）：</h4>
-<ul>
-<li><strong>类型</strong>：<code>list</code></li>
-<li><strong>作用</strong>：为每个协变量分别设置最小带宽值。</li>
-<li><strong>建议</strong>：如果不同协变量有不同的空间影响范围，可以单独为每个协变量设置最小带宽。否则，使用单一值即可。</li>
-</ul>
-<h4 id="7-multi_bw_max-mgtwr-">7. <strong>multi_bw_max</strong>（MGTWR 各协变量的最大带宽）：</h4>
-<ul>
-<li><strong>类型</strong>：<code>list</code></li>
-<li><strong>作用</strong>：为每个协变量设置最大带宽。</li>
-<li><strong>建议</strong>：如协变量之间有不同的空间变化范围，建议使用列表设置，否则可以用单一数值统一设置。</li>
-</ul>
-<h4 id="8-multi_tau_min-mgtwr-">8. <strong>multi_tau_min</strong>（MGTWR 各协变量的最小时空尺度）：</h4>
-<ul>
-<li><strong>类型</strong>：<code>list</code></li>
-<li><strong>作用</strong>：为每个协变量设置最小时间尺度。</li>
-<li><strong>建议</strong>：如果不同协变量在时间上有不同的作用范围，可以设置不同的值，否则使用单一数值。</li>
-</ul>
-<h4 id="9-multi_tau_max-mgtwr-">9. <strong>multi_tau_max</strong>（MGTWR 各协变量的最大时空尺度）：</h4>
-<ul>
-<li><strong>类型</strong>：<code>list</code></li>
-<li><strong>作用</strong>：为每个协变量设置最大时间尺度。</li>
-<li><strong>建议</strong>：与 <code>multi_tau_min</code> 类似，建议根据不同变量的时间特性设置，也可以使用单一值。</li>
-</ul>
-<h4 id="10-tol-">10. <strong>tol</strong>（收敛公差）：</h4>
-<ul>
-<li><strong>类型</strong>：<code>float</code></li>
-<li><strong>作用</strong>：控制模型的收敛精度，较小的值意味着模型更精确但计算更耗时。</li>
-<li><strong>建议</strong>：一般设为 <code>1e-5</code> 或 <code>1e-6</code>，确保模型收敛精度。</li>
-</ul>
-<h4 id="11-bw_decimal-">11. <strong>bw_decimal</strong>（带宽小数点精度）：</h4>
-<ul>
-<li><strong>类型</strong>：<code>int</code></li>
-<li><strong>作用</strong>：控制带宽保留的小数位数。</li>
-<li><strong>建议</strong>：一般保留 2 到 4 位小数。</li>
-</ul>
-<h4 id="12-tau_decimal-">12. <strong>tau_decimal</strong>（时空尺度小数点精度）：</h4>
-<ul>
-<li><strong>类型</strong>：<code>int</code></li>
-<li><strong>作用</strong>：控制时空尺度保留的小数位数。</li>
-<li><strong>建议</strong>：设为 2 到 4 位小数。</li>
-</ul>
-<h4 id="13-init_bw-">13. <strong>init_bw</strong>（初始带宽）：</h4>
-<ul>
-<li><strong>类型</strong>：<code>float</code> 或 <code>None</code></li>
-<li><strong>作用</strong>：初始带宽设置。如果设为 <code>None</code>，将从 GTWR 派生带宽。</li>
-<li><strong>建议</strong>：通常保持默认值 <code>None</code>，除非有特定带宽设置需求。</li>
-</ul>
-<h4 id="14-init_tau-">14. <strong>init_tau</strong>（初始时空尺度）：</h4>
-<ul>
-<li><strong>类型</strong>：<code>float</code> 或 <code>None</code></li>
-<li><strong>作用</strong>：初始时空尺度设置。如果设为 <code>None</code>，将从 GTWR 派生时空尺度。</li>
-<li><strong>建议</strong>：通常使用默认值 <code>None</code>，但如果有先验知识，可以设置适合的初始时空尺度。</li>
-</ul>
-<h4 id="15-tol_multi-">15. <strong>tol_multi</strong>（多带宽算法的收敛公差）：</h4>
-<ul>
-<li><strong>类型</strong>：<code>float</code></li>
-<li><strong>作用</strong>：控制多带宽回归算法的收敛精度。</li>
-<li><strong>建议</strong>：可以设置为与 <code>tol</code> 相同的值，<code>1e-5</code> 或更高，根据模型需求调整。</li>
-</ul>
-<h4 id="16-rss_score-">16. <strong>rss_score</strong>（残差平方和迭代评价标准）：</h4>
-<ul>
-<li><strong>类型</strong>：<code>bool</code></li>
-<li><strong>作用</strong>：是否使用残差平方和（RSS）来评估每次带宽迭代。如果设为 <code>True</code>，会使用 RSS，否则使用平滑函数。</li>
-<li><strong>建议</strong>：默认 <code>False</code> 使用平滑函数。如果想更准确地拟合残差，可以设置为 <code>True</code>。</li>
-</ul>
-<h4 id="17-verbose-">17. <strong>verbose</strong>（带宽搜索过程输出）：</h4>
-<ul>
-<li><strong>类型</strong>：<code>Boolean</code></li>
-<li><strong>作用</strong>：是否在带宽搜索过程中输出详细信息。</li>
-<li><strong>建议</strong>：设为 <code>True</code> 可以输出带宽搜索的进程，便于调试。</li>
-</ul>
-<h4 id="18-time_cost-">18. <strong>time_cost</strong>（运行时间输出）：</h4>
-<ul>
-<li><strong>类型</strong>：<code>bool</code></li>
-<li><strong>作用</strong>：是否输出模型运行时间。</li>
-<li><strong>建议</strong>：可以设为 <code>True</code>，用于监控模型运行效率。</li>
-</ul>
-</body></html>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: 32px 18px 56px;
+            font-family: "Microsoft YaHei UI", "PingFang SC", "Segoe UI", sans-serif;
+            background: linear-gradient(180deg, #f8f8f4 0%, #f2f4ed 100%);
+            color: var(--text);
+            line-height: 1.75;
+        }
+
+        .container {
+            max-width: 1080px;
+            margin: 0 auto;
+        }
+
+        .hero, .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            box-shadow: 0 12px 40px rgba(67, 83, 66, 0.06);
+        }
+
+        .hero {
+            padding: 28px;
+            margin-bottom: 20px;
+        }
+
+        .hero h1 {
+            margin: 0 0 10px;
+            font-size: 34px;
+        }
+
+        .hero p {
+            margin: 0;
+            color: var(--muted);
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 14px;
+            margin: 20px 0;
+        }
+
+        .pill {
+            background: var(--accent-soft);
+            border: 1px solid #d7e0d2;
+            border-radius: 14px;
+            padding: 16px;
+        }
+
+        .pill h3 {
+            margin: 0 0 8px;
+            font-size: 18px;
+            color: var(--accent);
+        }
+
+        .card {
+            padding: 24px;
+            margin-bottom: 18px;
+        }
+
+        h2 {
+            margin-top: 0;
+            font-size: 24px;
+        }
+
+        h3 {
+            margin-bottom: 8px;
+            font-size: 18px;
+        }
+
+        code {
+            background: #eef2ea;
+            padding: 2px 6px;
+            border-radius: 6px;
+            font-family: "Cascadia Mono", Consolas, monospace;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 12px;
+        }
+
+        th, td {
+            padding: 10px 12px;
+            border-bottom: 1px solid #e6ebe2;
+            vertical-align: top;
+            text-align: left;
+        }
+
+        th {
+            color: var(--accent);
+            background: #f3f6f0;
+        }
+
+        ul {
+            margin: 10px 0 0;
+            padding-left: 20px;
+        }
+
+        .muted {
+            color: var(--muted);
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <section class="hero">
+        <h1>数据分析模块使用说明</h1>
+        <p>当前分析页已按 <code>mgtwr-master</code> 实际接口对齐，支持 <code>GWR</code>、<code>MGWR</code>、<code>GTWR</code>、<code>MGTWR</code> 四类模型，并开放线程数、截距项、坐标转换、搜索输出、耗时输出等设置。</p>
+    </section>
+
+    <section class="grid">
+        <div class="pill">
+            <h3>GWR</h3>
+            <div class="muted">只考虑空间异质性，适合横截面空间数据。</div>
+        </div>
+        <div class="pill">
+            <h3>MGWR</h3>
+            <div class="muted">不同变量拥有不同空间带宽，适合空间尺度差异明显的情形。</div>
+        </div>
+        <div class="pill">
+            <h3>GTWR</h3>
+            <div class="muted">同时考虑空间与时间权重，适合面板或时空样本。</div>
+        </div>
+        <div class="pill">
+            <h3>MGTWR</h3>
+            <div class="muted">不同变量拥有不同空间带宽和时空尺度，表达能力最强，耗时也最高。</div>
+        </div>
+    </section>
+
+    <section class="card">
+        <h2>页面流程</h2>
+        <ul>
+            <li>先导入输入 Excel，再选择输出文件。</li>
+            <li>选择因变量、自变量和 2 个坐标列。</li>
+            <li>如果模型是 <code>GTWR</code> 或 <code>MGTWR</code>，还必须选择时间列。</li>
+            <li>选择模型、核函数、固定带宽与评价准则后，再填写该模型对应参数。</li>
+            <li>分析完成后，输出文件会包含 <code>summary</code>、<code>coefficients</code>、<code>settings</code> 等工作表。</li>
+        </ul>
+    </section>
+
+    <section class="card">
+        <h2>通用参数</h2>
+        <table>
+            <thead>
+            <tr>
+                <th>参数</th>
+                <th>作用</th>
+                <th>建议</th>
+            </tr>
+            </thead>
+            <tbody>
+            <tr>
+                <td><code>kernel</code></td>
+                <td>核函数，可选 <code>gaussian</code>、<code>bisquare</code>、<code>exponential</code>。</td>
+                <td>默认优先尝试 <code>bisquare</code> 或 <code>gaussian</code>。</td>
+            </tr>
+            <tr>
+                <td><code>fixed</code></td>
+                <td>是否固定带宽。<code>True</code> 为距离带宽，<code>False</code> 为自适应近邻带宽。</td>
+                <td>点位分布不均时，通常优先用 <code>False</code>。</td>
+            </tr>
+            <tr>
+                <td><code>criterion</code></td>
+                <td>搜索准则，可选 <code>AICc</code>、<code>AIC</code>、<code>BIC</code>、<code>CV</code>。</td>
+                <td>小样本优先 <code>AICc</code>。</td>
+            </tr>
+            <tr>
+                <td><code>thread</code></td>
+                <td>并行线程数，对应模型中的 <code>thread</code> 参数。</td>
+                <td>建议从 <code>1</code>、<code>2</code>、<code>4</code> 逐步测试，线程过多不一定更快。</td>
+            </tr>
+            <tr>
+                <td><code>constant</code></td>
+                <td>是否自动加入截距项。</td>
+                <td>通常保持开启，除非输入数据已手动包含常数列。</td>
+            </tr>
+            <tr>
+                <td><code>convert</code></td>
+                <td>是否把经纬度投影为平面坐标。</td>
+                <td>坐标列是真实经纬度时建议开启。</td>
+            </tr>
+            <tr>
+                <td><code>verbose</code></td>
+                <td>是否在控制台输出搜索过程。</td>
+                <td>调参阶段建议开启。</td>
+            </tr>
+            <tr>
+                <td><code>time_cost</code></td>
+                <td>是否输出搜索耗时。</td>
+                <td>建议开启，便于观察线程和参数对速度的影响。</td>
+            </tr>
+            </tbody>
+        </table>
+    </section>
+
+    <section class="card">
+        <h2>GWR 参数</h2>
+        <table>
+            <thead>
+            <tr>
+                <th>参数</th>
+                <th>说明</th>
+            </tr>
+            </thead>
+            <tbody>
+            <tr><td><code>bw_min</code> / <code>bw_max</code></td><td>带宽搜索范围。</td></tr>
+            <tr><td><code>tol</code></td><td>搜索收敛公差。</td></tr>
+            <tr><td><code>bw_decimal</code></td><td>带宽保留的小数位数。</td></tr>
+            <tr><td><code>max_iter</code></td><td>黄金分割搜索最大迭代次数。</td></tr>
+            </tbody>
+        </table>
+    </section>
+
+    <section class="card">
+        <h2>MGWR 参数</h2>
+        <table>
+            <thead>
+            <tr>
+                <th>参数</th>
+                <th>说明</th>
+            </tr>
+            </thead>
+            <tbody>
+            <tr><td><code>bw_min</code> / <code>bw_max</code></td><td>全局初始化搜索范围。</td></tr>
+            <tr><td><code>init_bw</code></td><td>初始化带宽；为空时自动从 GWR 派生。</td></tr>
+            <tr><td><code>multi_bw_min</code> / <code>multi_bw_max</code></td><td>各变量的多带宽范围。可以填单个值，也可以填逗号分隔的多个值。</td></tr>
+            <tr><td><code>tol</code></td><td>带宽搜索收敛公差。</td></tr>
+            <tr><td><code>tol_multi</code></td><td>多带宽回代收敛公差。</td></tr>
+            <tr><td><code>bws_same_times</code></td><td>带宽连续多少轮不变后停止回代。</td></tr>
+            <tr><td><code>rss_score</code></td><td>是否用 RSS 作为回代评分标准。</td></tr>
+            <tr><td><code>n_chunks</code></td><td>推断阶段分块数，越大越省内存。</td></tr>
+            <tr><td><code>skip_calculate</code></td><td>跳过 CCT/ENP 等推断统计，速度更快但输出统计量更少。</td></tr>
+            </tbody>
+        </table>
+    </section>
+
+    <section class="card">
+        <h2>GTWR 参数</h2>
+        <table>
+            <thead>
+            <tr>
+                <th>参数</th>
+                <th>说明</th>
+            </tr>
+            </thead>
+            <tbody>
+            <tr><td><code>bw_min</code> / <code>bw_max</code></td><td>空间带宽搜索范围。</td></tr>
+            <tr><td><code>tau_min</code> / <code>tau_max</code></td><td>时空尺度搜索范围。</td></tr>
+            <tr><td><code>tol</code></td><td>联合搜索收敛公差。</td></tr>
+            <tr><td><code>bw_decimal</code></td><td>带宽精度。</td></tr>
+            <tr><td><code>tau_decimal</code></td><td>时空尺度精度。</td></tr>
+            <tr><td><code>max_iter</code></td><td>联合搜索最大迭代次数。</td></tr>
+            </tbody>
+        </table>
+    </section>
+
+    <section class="card">
+        <h2>MGTWR 参数</h2>
+        <table>
+            <thead>
+            <tr>
+                <th>参数</th>
+                <th>说明</th>
+            </tr>
+            </thead>
+            <tbody>
+            <tr><td><code>bw_min</code> / <code>bw_max</code></td><td>单一空间带宽搜索范围。</td></tr>
+            <tr><td><code>tau_min</code> / <code>tau_max</code></td><td>单一时空尺度搜索范围。</td></tr>
+            <tr><td><code>init_bw</code> / <code>init_tau</code></td><td>初始化带宽与时空尺度；为空时自动从 GTWR 派生。</td></tr>
+            <tr><td><code>multi_bw_min</code> / <code>multi_bw_max</code></td><td>各变量空间带宽范围。</td></tr>
+            <tr><td><code>multi_tau_min</code> / <code>multi_tau_max</code></td><td>各变量时空尺度范围。</td></tr>
+            <tr><td><code>tol</code></td><td>单一带宽与时空尺度搜索收敛公差。</td></tr>
+            <tr><td><code>tol_multi</code></td><td>多尺度回代收敛公差。</td></tr>
+            <tr><td><code>bw_decimal</code> / <code>tau_decimal</code></td><td>带宽与时空尺度的小数位精度。</td></tr>
+            <tr><td><code>rss_score</code></td><td>是否使用 RSS 评价每轮回代。</td></tr>
+            <tr><td><code>n_chunks</code></td><td>推断阶段分块数。</td></tr>
+            <tr><td><code>skip_calculate</code></td><td>跳过推断统计项。</td></tr>
+            </tbody>
+        </table>
+    </section>
+
+    <section class="card">
+        <h2>输出结果说明</h2>
+        <ul>
+            <li><code>summary</code>：模型摘要、主要统计量、搜索结果。</li>
+            <li><code>coefficients</code>：局部回归系数、预测值、残差，以及可用时的标准误和 t 值。</li>
+            <li><code>settings</code>：本次运行的全部参数记录。</li>
+            <li><code>search_scores</code> / <code>bw_history</code> / <code>tau_history</code>：多尺度模型的搜索历史。</li>
+        </ul>
+    </section>
+</div>
+</body>
+</html>

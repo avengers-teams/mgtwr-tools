@@ -1,4 +1,11 @@
-*.venv
-*.idea
-*.pyc
 __pycache__/
+.venv/
+.idea/
+*.pyc
+*.pyo
+*.pyd
+*.log
+.pytest_cache/
+build/
+dist/
+pre.xlsx
