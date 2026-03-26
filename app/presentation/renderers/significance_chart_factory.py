@@ -251,6 +251,14 @@ class SignificanceChartFactory:
     def _apply_location_filter(cls, frame, dataset, render_options):
         if not cls._is_single_location_mode(render_options):
             return frame
+        if render_options.location_column:
+            if render_options.location_column not in frame.columns:
+                raise ValueError(f"结果文件中缺少地点字段: {render_options.location_column}")
+            mask = cls._series_matches_value(frame[render_options.location_column], render_options.location_value)
+            filtered = frame.loc[mask].copy()
+            if filtered.empty:
+                raise ValueError("所选地点没有对应数据")
+            return filtered
         x_col, y_col = cls._resolve_coordinate_columns(dataset, render_options)
         x_value, y_value = render_options.location_value
         mask = cls._series_matches_value(frame[x_col], x_value) & cls._series_matches_value(frame[y_col], y_value)
@@ -275,6 +283,8 @@ class SignificanceChartFactory:
     def _location_label(dataset, render_options):
         if render_options is None or render_options.location_value is None:
             return "地点"
+        if render_options.location_column:
+            return f"{render_options.location_column}={dataset.format_display_value(render_options.location_value)}"
         x_col = render_options.longitude_column or (dataset.coord_columns[0] if len(dataset.coord_columns) >= 1 else "X")
         y_col = render_options.latitude_column or (dataset.coord_columns[1] if len(dataset.coord_columns) >= 2 else "Y")
         x_value, y_value = render_options.location_value

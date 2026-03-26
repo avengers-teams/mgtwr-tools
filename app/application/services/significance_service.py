@@ -32,9 +32,12 @@ class SignificanceAnalysisService:
         if getattr(options, "spatial_mode", None) == "aggregate_time":
             hint += "，空间展示：汇总全部时间"
         if getattr(options, "temporal_mode", None) == "single_location" and getattr(options, "location_value", None) is not None:
-            x_col = options.longitude_column or (dataset.coord_columns[0] if len(dataset.coord_columns) >= 1 else "X")
-            y_col = options.latitude_column or (dataset.coord_columns[1] if len(dataset.coord_columns) >= 2 else "Y")
-            x_value, y_value = options.location_value
-            hint += f"，时间展示：{dataset.format_location_label(x_value, y_value, x_col, y_col)}"
+            if getattr(options, "location_column", None):
+                hint += f"，时间展示：{options.location_column}={dataset.format_display_value(options.location_value)}"
+            else:
+                x_col = options.longitude_column or (dataset.coord_columns[0] if len(dataset.coord_columns) >= 1 else "X")
+                y_col = options.latitude_column or (dataset.coord_columns[1] if len(dataset.coord_columns) >= 2 else "Y")
+                x_value, y_value = options.location_value
+                hint += f"，时间展示：{dataset.format_location_label(x_value, y_value, x_col, y_col)}"
         return hint
 

@@ -57,6 +57,7 @@ class SignificanceAnalysisPage(QWidget):
         self.viewmodel: SignificancePageViewModel | None = None
         self.canvas = None
         self.metric_cards = {}
+        self.location_field_columns = []
         self.location_options = []
         self.init_ui()
 
@@ -200,10 +201,15 @@ class SignificanceAnalysisPage(QWidget):
         self.temporal_mode_combo.currentIndexChanged.connect(self.on_display_mode_changed)
         control_layout.addWidget(self.temporal_mode_combo, 6, 3)
 
-        control_layout.addWidget(QLabel("地点"), 7, 0)
+        control_layout.addWidget(QLabel("地点字段"), 7, 0)
+        self.location_field_combo = ModernComboBox()
+        self.location_field_combo.currentIndexChanged.connect(self.on_location_field_changed)
+        control_layout.addWidget(self.location_field_combo, 7, 1)
+
+        control_layout.addWidget(QLabel("地点"), 7, 2)
         self.location_combo = ModernComboBox()
         self.location_combo.currentIndexChanged.connect(self.render_current_chart)
-        control_layout.addWidget(self.location_combo, 7, 1, 1, 3)
+        control_layout.addWidget(self.location_combo, 7, 3)
 
         self.chart_hint_label = BodyLabel("请先加载包含 t_ 列的结果文件。")
         self.chart_hint_label.setWordWrap(True)
@@ -233,14 +239,13 @@ class SignificanceAnalysisPage(QWidget):
             return
         try:
             self.viewmodel = self.presenter.load_file(file_path)
+            self.file_label.setText(f"当前文件：{self.viewmodel.file_path}")
+            self.console_output.append(f"已加载显著性分析结果文件: {self.viewmodel.file_path}")
+            self.populate_controls()
+            self.render_current_chart()
         except Exception as exc:
             QMessageBox.critical(self, "加载失败", f"无法读取结果文件：{exc}")
             self.console_output.append(f"显著性分析加载失败: {exc}")
-            return
-        self.file_label.setText(f"当前文件：{self.viewmodel.file_path}")
-        self.console_output.append(f"已加载显著性分析结果文件: {self.viewmodel.file_path}")
-        self.populate_controls()
-        self.render_current_chart()
 
     def populate_controls(self):
         if self.viewmodel is None:
@@ -261,7 +266,8 @@ class SignificanceAnalysisPage(QWidget):
             self.beta_combo.addItem(self.viewmodel.dataset.metric_display_name(column), userData=column)
         self.beta_combo.blockSignals(False)
         self.populate_coordinate_combos()
-        self.populate_location_combo()
+        self.location_field_columns = self.viewmodel.dataset.location_candidate_columns()
+        self.populate_location_field_combo()
         self.populate_time_combos()
         if self.viewmodel.chart_specs:
             self.chart_combo.setCurrentIndex(0)
@@ -336,13 +342,36 @@ class SignificanceAnalysisPage(QWidget):
         if self.viewmodel is None:
             self.location_combo.blockSignals(False)
             return
+        location_column = self.location_field_combo.currentData()
         x_col = self.longitude_combo.currentData()
         y_col = self.latitude_combo.currentData()
-        self.location_options = self.viewmodel.dataset.location_value_options(x_col, y_col)
+        self.location_options = self.viewmodel.dataset.location_value_options(location_column=location_column, x_column=x_col, y_column=y_col)
         for label, value in self.location_options:
             self.location_combo.addItem(label, userData=value)
         self.location_combo.setCurrentIndex(0)
         self.location_combo.blockSignals(False)
+
+    def populate_location_field_combo(self):
+        self.location_field_combo.blockSignals(True)
+        self.location_field_combo.clear()
+        self.location_field_combo.addItem("使用坐标组合", userData=None)
+        for column in self.location_field_columns:
+            self.location_field_combo.addItem(str(column), userData=column)
+
+        preferred = next((column for column in self.location_field_columns if str(column).startswith("Original_")), None)
+        preferred = preferred or next(
+            (
+                column for column in self.location_field_columns
+                if any(keyword in str(column).lower() for keyword in ("name", "region", "city", "county", "district", "地点", "地区", "区域"))
+            ),
+            None,
+        )
+        if preferred is not None:
+            index = self.location_field_combo.findData(preferred)
+            if index >= 0:
+                self.location_field_combo.setCurrentIndex(index)
+        self.location_field_combo.blockSignals(False)
+        self.populate_location_combo()
 
     def populate_time_combos(self):
         self.time_column_combo.blockSignals(True)
@@ -409,6 +438,11 @@ class SignificanceAnalysisPage(QWidget):
         self.update_control_state()
         self.render_current_chart()
 
+    def on_location_field_changed(self):
+        self.populate_location_combo()
+        self.update_control_state()
+        self.render_current_chart()
+
     def current_chart_spec(self):
         index = self.chart_combo.currentIndex()
         if index < 0:
@@ -432,6 +466,7 @@ class SignificanceAnalysisPage(QWidget):
         key = spec.key if spec else ""
         spatial_mode = self.spatial_mode_combo.currentData() if key in {"spatial", "coefficient_spatial"} else "time_slice"
         temporal_mode = self.temporal_mode_combo.currentData() if key in {"temporal", "coefficient_temporal"} else "aggregate_space"
+        location_column = self.location_field_combo.currentData() if temporal_mode == "single_location" else None
         location_value = self.location_combo.currentData() if temporal_mode == "single_location" else None
         return SignificanceRenderOptions(
             threshold=self.parse_float_input(self.threshold_input, 1.96),
@@ -442,6 +477,7 @@ class SignificanceAnalysisPage(QWidget):
             time_value=self.time_value_combo.currentData(),
             spatial_mode=spatial_mode or "time_slice",
             temporal_mode=temporal_mode or "aggregate_space",
+            location_column=location_column,
             location_value=location_value,
             figure_title=self.title_input.text().strip() or None,
             decimal_places=self.decimal_spin.value(),
@@ -465,13 +501,15 @@ class SignificanceAnalysisPage(QWidget):
         uses_beta = key in {"coefficient_spatial", "coefficient_temporal"}
         uses_time_slice = key in {"summary", "spatial", "coefficient_spatial"}
         uses_temporal_dataset = bool(self.viewmodel is not None and self.viewmodel.dataset.has_temporal())
-        self.coordinate_type_combo.setEnabled(uses_spatial)
-        self.longitude_combo.setEnabled(uses_spatial)
-        self.latitude_combo.setEnabled(uses_spatial)
+        uses_location_coordinates = bool(uses_temporal and self.temporal_mode_combo.currentData() == "single_location" and self.location_field_combo.currentData() is None)
+        self.coordinate_type_combo.setEnabled(uses_spatial or uses_location_coordinates)
+        self.longitude_combo.setEnabled(uses_spatial or uses_location_coordinates)
+        self.latitude_combo.setEnabled(uses_spatial or uses_location_coordinates)
         self.time_column_combo.setEnabled(uses_temporal or uses_time_slice)
         self.time_value_combo.setEnabled(uses_time_slice and self.time_column_combo.count() > 0 and self.spatial_mode_combo.currentData() != "aggregate_time")
         self.spatial_mode_combo.setEnabled(uses_spatial and uses_temporal_dataset)
         self.temporal_mode_combo.setEnabled(uses_temporal and uses_temporal_dataset)
+        self.location_field_combo.setEnabled(uses_temporal and self.temporal_mode_combo.currentData() == "single_location" and bool(self.location_field_columns))
         self.location_combo.setEnabled(uses_temporal and self.temporal_mode_combo.currentData() == "single_location")
         self.beta_combo.setEnabled(uses_beta)
 

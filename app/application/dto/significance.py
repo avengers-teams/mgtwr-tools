@@ -13,6 +13,7 @@ class SignificanceRenderOptions:
     time_value: object | None = None
     spatial_mode: str = "time_slice"
     temporal_mode: str = "aggregate_space"
+    location_column: str | None = None
     location_value: object | None = None
     figure_title: str | None = None
     decimal_places: int = 4

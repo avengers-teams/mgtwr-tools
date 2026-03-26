@@ -56,7 +56,40 @@ class ResultDataset:
         values = self.sort_temporal_values(values)
         return [(self.format_display_value(value), value) for value in values]
 
-    def location_value_options(self, x_column, y_column):
+    def location_candidate_columns(self):
+        preferred = []
+        fallback = []
+        excluded = set(self.beta_columns + self.se_columns + self.t_columns)
+        if self.time_column:
+            excluded.add(self.time_column)
+        if self.target_column:
+            excluded.add(self.target_column)
+        excluded.update(self.coord_columns)
+        excluded.update({"predicted", "residual"})
+        for column in self.coefficients.columns:
+            if column in excluded:
+                continue
+            series = self.coefficients[column].dropna()
+            if series.empty or series.nunique(dropna=True) < 2:
+                continue
+            normalized = str(column).strip().lower()
+            if series.dtype == object or str(series.dtype).startswith("category") or str(column).startswith("Original_"):
+                preferred.append(column)
+            elif normalized in {"id", "name", "region", "city", "county", "district", "地点", "地区", "区域"}:
+                preferred.append(column)
+            elif series.nunique(dropna=True) <= 100:
+                fallback.append(column)
+        ordered = []
+        for column in preferred + fallback:
+            if column not in ordered:
+                ordered.append(column)
+        return ordered
+
+    def location_value_options(self, location_column=None, x_column=None, y_column=None):
+        if location_column and location_column in self.coefficients.columns:
+            values = self.coefficients[location_column].dropna().drop_duplicates().tolist()
+            values = self.sort_temporal_values(values)
+            return [(f"{location_column}={self.format_display_value(value)}", value) for value in values]
         if not x_column or not y_column:
             return []
         if x_column not in self.coefficients.columns or y_column not in self.coefficients.columns:
