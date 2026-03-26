@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import QApplication, QHBoxLayout, QSplitter, QVBoxLayout, Q
 from qfluentwidgets import CaptionLabel, FluentIcon, FluentWindow, NavigationItemPosition, TransparentPushButton
 
 from app.core.config import APP_TITLE
+from app.presentation.views.pages.app_info import AppInfoPage
 from app.presentation.views.theme import make_scrollable
 from app.presentation.views.pages.MGTWR_analysis import MGRWRAnalysisPage
 from app.presentation.views.pages.data_crawling import DirectorySelector
@@ -24,6 +25,7 @@ class MainWindow(FluentWindow):
         self.container = container
         self.route_widgets = {}
         self._nav_expanded_once = False
+        self._startup_update_check_scheduled = False
         self.init_ui()
 
     def init_ui(self):
@@ -39,6 +41,7 @@ class MainWindow(FluentWindow):
         self.navigationInterface.setAcrylicEnabled(True)
 
         self.console_output = TaskConsoleManager()
+        self.update_presenter = self.container.create_update_presenter(self)
         self.task_manager = TaskManager(self.console_output)
         self.data_gen_page = DataGenerationPage(self.console_output)
         self.dir_select_page = DirectorySelector(self.console_output, self.task_manager)
@@ -46,6 +49,7 @@ class MainWindow(FluentWindow):
         self.data_visualization_page = DataVisualizationPage(self.console_output)
         self.significance_analysis_page = self.container.create_significance_page(self.console_output)
         self.additional_page = AdditionalWindows()
+        self.app_info_page = AppInfoPage(self.update_presenter)
 
         self.build_workspace()
         self.init_navigation()
@@ -126,6 +130,13 @@ class MainWindow(FluentWindow):
             FluentIcon.DEVELOPER_TOOLS,
             position=NavigationItemPosition.BOTTOM,
         )
+        self.register_page(
+            self.app_info_page,
+            "app_info",
+            "应用信息",
+            FluentIcon.INFO,
+            position=NavigationItemPosition.BOTTOM,
+        )
 
         self.switch_to_route("data_generation")
 
@@ -152,6 +163,11 @@ class MainWindow(FluentWindow):
         if not self._nav_expanded_once:
             self.navigationInterface.expand(useAni=False)
             self._nav_expanded_once = True
+        if not self._startup_update_check_scheduled:
+            presenter = getattr(self, "update_presenter", None)
+            if presenter is not None:
+                presenter.schedule_check(delay_ms=1200)
+            self._startup_update_check_scheduled = True
 
     def closeEvent(self, event):
         self.additional_page.close_tool_windows()
