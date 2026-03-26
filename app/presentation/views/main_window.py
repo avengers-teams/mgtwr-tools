@@ -153,6 +153,10 @@ class MainWindow(FluentWindow):
             self.navigationInterface.expand(useAni=False)
             self._nav_expanded_once = True
 
+    def closeEvent(self, event):
+        self.additional_page.close_tool_windows()
+        super().closeEvent(event)
+
     def __del__(self):
         sys.stdout = sys.__stdout__
         sys.stderr = sys.__stderr__

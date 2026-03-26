@@ -73,21 +73,39 @@ class AdditionalWindows(QWidget):
         panel.body_layout.addWidget(button)
         return panel
 
+    def has_open_tool_windows(self):
+        return any(window is not None and window.isVisible() for window in self._tool_windows())
+
+    def close_tool_windows(self):
+        for window in self._tool_windows():
+            if window is not None and window.isVisible():
+                window.close()
+
+    def _tool_windows(self):
+        return (
+            self.vif_window,
+            self.shp_window,
+            self.standardization_window,
+        )
+
+    @staticmethod
+    def _show_window(window):
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
     def open_vif_window(self):
-        self.vif_window = VIFWindow()
-        self.vif_window.show()
-        self.vif_window.raise_()
-        self.vif_window.activateWindow()
+        if self.vif_window is None or not self.vif_window.isVisible():
+            self.vif_window = VIFWindow()
+        self._show_window(self.vif_window)
 
     def open_shp_window(self):
-        self.shp_window = CoefficientsToShpWindow()
-        self.shp_window.show()
-        self.shp_window.raise_()
-        self.shp_window.activateWindow()
+        if self.shp_window is None or not self.shp_window.isVisible():
+            self.shp_window = CoefficientsToShpWindow()
+        self._show_window(self.shp_window)
 
     def open_standardization_window(self):
-        self.standardization_window = DataStandardizationWindow()
-        self.standardization_window.show()
-        self.standardization_window.raise_()
-        self.standardization_window.activateWindow()
+        if self.standardization_window is None or not self.standardization_window.isVisible():
+            self.standardization_window = DataStandardizationWindow()
+        self._show_window(self.standardization_window)
 
