@@ -54,7 +54,19 @@ class ResultDataset:
             return []
         values = self.coefficients[time_column].dropna().drop_duplicates().tolist()
         values = self.sort_temporal_values(values)
-        return [(self.format_display_value(value), str(value)) for value in values]
+        return [(self.format_display_value(value), value) for value in values]
+
+    def location_value_options(self, x_column, y_column):
+        if not x_column or not y_column:
+            return []
+        if x_column not in self.coefficients.columns or y_column not in self.coefficients.columns:
+            return []
+        locations = self.coefficients[[x_column, y_column]].dropna().drop_duplicates().copy()
+        locations = self.sort_location_frame(locations, x_column, y_column)
+        return [
+            (self.format_location_label(row[x_column], row[y_column], x_column, y_column), (row[x_column], row[y_column]))
+            for _, row in locations.iterrows()
+        ]
 
     def metric_text(self, key, decimals=4, default="--"):
         value = self.summary.get(key, default)
@@ -120,8 +132,22 @@ class ResultDataset:
     @staticmethod
     def format_display_value(value):
         if isinstance(value, pd.Timestamp):
-            return value.strftime("%Y-%m-%d")
+            if value.normalize() == value:
+                return value.strftime("%Y-%m-%d")
+            return value.strftime("%Y-%m-%d %H:%M:%S")
         return str(value)
+
+    @classmethod
+    def format_location_label(cls, x_value, y_value, x_column, y_column):
+        return f"{x_column}={cls.format_display_value(x_value)} | {y_column}={cls.format_display_value(y_value)}"
+
+    @staticmethod
+    def sort_location_frame(frame, x_column, y_column):
+        numeric_x = pd.to_numeric(frame[x_column], errors="coerce")
+        numeric_y = pd.to_numeric(frame[y_column], errors="coerce")
+        if numeric_x.notna().all() and numeric_y.notna().all():
+            return frame.assign(__x__=numeric_x, __y__=numeric_y).sort_values(["__x__", "__y__"]).drop(columns=["__x__", "__y__"])
+        return frame.assign(__x__=frame[x_column].astype(str), __y__=frame[y_column].astype(str)).sort_values(["__x__", "__y__"]).drop(columns=["__x__", "__y__"])
 
     @staticmethod
     def format_number(value, decimals):

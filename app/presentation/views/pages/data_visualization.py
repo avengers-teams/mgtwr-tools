@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib import colormaps
 from PyQt5.QtCore import QSize, Qt
@@ -9,7 +11,7 @@ from qfluentwidgets.components.widgets.combo_box import ComboBoxMenu
 from app.presentation.renderers.model_visualization import ChartFactory, RenderOptions, VisualizationData
 from app.presentation.views.widgets.button import ModernButton
 from app.presentation.views.widgets.combobox import ModernComboBox
-from app.presentation.views.widgets.fluent_surface import FrostedPanel
+from app.presentation.views.widgets.fluent_surface import FrostedPanel, SectionHeader
 from app.presentation.views.widgets.input import ModernLineEdit
 
 
@@ -86,6 +88,14 @@ class MetricCard(FrostedPanel):
         self.value_label.setText(str(value))
 
 
+@dataclass(frozen=True)
+class ChartControlPolicy:
+    visible_fields: tuple[str, ...]
+
+    def includes(self, field_key):
+        return field_key in self.visible_fields
+
+
 class DataVisualizationPage(QWidget):
     FONT_OPTIONS = [
         ("微软雅黑", "Microsoft YaHei"),
@@ -106,6 +116,18 @@ class DataVisualizationPage(QWidget):
         ("jenks", "自然断点"),
         ("log", "对数拉伸"),
     ]
+    COORDINATE_TYPE_OPTIONS = [
+        ("geographic", "经纬度 (经度 / 纬度)"),
+        ("projected", "平面坐标 (X / Y)"),
+    ]
+    SPATIAL_DISPLAY_OPTIONS = [
+        ("time_slice", "按时间切片"),
+        ("aggregate_time", "汇总全部时间"),
+    ]
+    TEMPORAL_DISPLAY_OPTIONS = [
+        ("aggregate_space", "全部地点汇总"),
+        ("single_location", "单个地点"),
+    ]
 
     def __init__(self, console_output):
         super().__init__()
@@ -120,7 +142,13 @@ class DataVisualizationPage(QWidget):
         self.coordinate_columns = []
         self.time_columns = []
         self.category_columns = []
+        self.location_field_columns = []
+        self.location_options = []
         self.palette_names = sorted(colormaps)
+        self.control_sections = {}
+        self.control_section_bodies = {}
+        self.control_rows = {}
+        self.control_field_sections = {}
         self.init_ui()
 
     def init_ui(self):
@@ -169,45 +197,27 @@ class DataVisualizationPage(QWidget):
         layout.addLayout(metric_grid)
 
         control_panel = FrostedPanel()
-        control_layout = QGridLayout(control_panel)
+        control_layout = QVBoxLayout(control_panel)
         control_layout.setContentsMargins(20, 18, 20, 18)
-        control_layout.setHorizontalSpacing(16)
-        control_layout.setVerticalSpacing(12)
+        control_layout.setSpacing(12)
 
-        control_layout.addWidget(QLabel("图表"), 0, 0)
         self.chart_combo = ModernComboBox()
         self.chart_combo.currentIndexChanged.connect(self.on_chart_changed)
-        control_layout.addWidget(self.chart_combo, 0, 1)
-
-        control_layout.addWidget(QLabel("统计量"), 0, 2)
         self.beta_combo = ModernComboBox()
         self.beta_combo.currentIndexChanged.connect(self.render_current_chart)
-        control_layout.addWidget(self.beta_combo, 0, 3)
-
-        control_layout.addWidget(QLabel("标题"), 1, 0)
         self.title_input = ModernLineEdit()
         self.title_input.setPlaceholderText("留空则使用默认标题")
         self.title_input.textChanged.connect(self.render_current_chart)
-        control_layout.addWidget(self.title_input, 1, 1)
-
-        control_layout.addWidget(QLabel("图例名称"), 1, 2)
         self.legend_input = ModernLineEdit()
         self.legend_input.setPlaceholderText("留空则使用默认图例名称")
         self.legend_input.textChanged.connect(self.render_current_chart)
-        control_layout.addWidget(self.legend_input, 1, 3)
-
-        control_layout.addWidget(QLabel("字体"), 2, 0)
         self.font_combo = ModernComboBox()
         self.font_combo.currentIndexChanged.connect(self.on_font_changed)
-        control_layout.addWidget(self.font_combo, 2, 1)
-
-        control_layout.addWidget(QLabel("配色"), 2, 2)
         self.palette_combo = PalettePreviewComboBox()
         self.palette_combo.setIconSize(QSize(176, 24))
         self.palette_combo.setMinimumWidth(220)
         self.palette_combo.setMinimumHeight(44)
         self.palette_combo.currentIndexChanged.connect(self.on_palette_changed)
-        control_layout.addWidget(self.palette_combo, 2, 3)
 
         vector_button = ModernButton("选择 shp/geojson")
         vector_button.clicked.connect(self.select_vector_file)
@@ -215,129 +225,180 @@ class DataVisualizationPage(QWidget):
         raster_button.clicked.connect(self.select_raster_file)
         clear_raster_button = TransparentPushButton("清空栅格")
         clear_raster_button.clicked.connect(self.clear_raster_file)
-        control_layout.addWidget(vector_button, 3, 0)
-        control_layout.addWidget(raster_button, 3, 2)
-        control_layout.addWidget(clear_raster_button, 3, 3, alignment=Qt.AlignLeft)
+        self.vector_action_row = self.create_action_row(vector_button, raster_button, clear_raster_button)
 
         self.vector_label = BodyLabel("边界文件：未选择")
         self.vector_label.setWordWrap(True)
-        control_layout.addWidget(self.vector_label, 4, 0, 1, 2)
 
         self.raster_label = BodyLabel("栅格文件：未选择")
         self.raster_label.setWordWrap(True)
-        control_layout.addWidget(self.raster_label, 4, 2, 1, 2)
 
-        control_layout.addWidget(QLabel("经度列"), 5, 0)
+        self.coordinate_type_combo = ModernComboBox()
+        for value, label in self.COORDINATE_TYPE_OPTIONS:
+            self.coordinate_type_combo.addItem(label, userData=value)
+        self.coordinate_type_combo.currentIndexChanged.connect(self.on_coordinate_type_changed)
+
+        self.longitude_label = QLabel("经度列")
         self.longitude_combo = ModernComboBox()
-        self.longitude_combo.currentIndexChanged.connect(self.render_current_chart)
-        control_layout.addWidget(self.longitude_combo, 5, 1)
+        self.longitude_combo.currentIndexChanged.connect(self.on_coordinate_selection_changed)
 
-        control_layout.addWidget(QLabel("纬度列"), 6, 2)
+        self.latitude_label = QLabel("纬度列")
         self.latitude_combo = ModernComboBox()
-        self.latitude_combo.currentIndexChanged.connect(self.render_current_chart)
-        control_layout.addWidget(self.latitude_combo, 6, 3)
+        self.latitude_combo.currentIndexChanged.connect(self.on_coordinate_selection_changed)
 
-        control_layout.addWidget(QLabel("时间列"), 6, 0)
         self.time_column_combo = ModernComboBox()
         self.time_column_combo.currentIndexChanged.connect(self.on_time_column_changed)
-        control_layout.addWidget(self.time_column_combo, 6, 1)
 
-        control_layout.addWidget(QLabel("时间点"), 7, 2)
         self.time_value_combo = ModernComboBox()
         self.time_value_combo.currentIndexChanged.connect(self.render_current_chart)
-        control_layout.addWidget(self.time_value_combo, 7, 3)
 
-        control_layout.addWidget(QLabel("分类列"), 7, 0)
         self.category_combo = ModernComboBox()
         self.category_combo.currentIndexChanged.connect(self.render_current_chart)
-        control_layout.addWidget(self.category_combo, 7, 1)
 
-        control_layout.addWidget(QLabel("小数位"), 8, 2)
         self.decimal_spin = SpinBox()
         self.decimal_spin.setRange(0, 8)
         self.decimal_spin.setValue(4)
         self.decimal_spin.valueChanged.connect(self.on_decimal_changed)
-        control_layout.addWidget(self.decimal_spin, 8, 3)
 
-        control_layout.addWidget(QLabel("时间占位宽度"), 8, 0)
         self.time_slot_width_spin = SpinBox()
         self.time_slot_width_spin.setRange(1, 20)
         self.time_slot_width_spin.setValue(2)
         self.time_slot_width_spin.valueChanged.connect(self.render_current_chart)
-        control_layout.addWidget(self.time_slot_width_spin, 8, 1)
 
-        control_layout.addWidget(QLabel("分类占位宽度"), 9, 2)
         self.category_slot_width_spin = SpinBox()
         self.category_slot_width_spin.setRange(1, 20)
         self.category_slot_width_spin.setValue(2)
         self.category_slot_width_spin.valueChanged.connect(self.render_current_chart)
-        control_layout.addWidget(self.category_slot_width_spin, 9, 3)
 
-        control_layout.addWidget(QLabel("图宽"), 9, 0)
         self.figure_width_input = ModernLineEdit()
         self.figure_width_input.setText("8")
         self.figure_width_input.setPlaceholderText("例如 15")
         self.figure_width_input.textChanged.connect(self.render_current_chart)
-        control_layout.addWidget(self.figure_width_input, 9, 1)
 
-        control_layout.addWidget(QLabel("图高"), 10, 2)
         self.figure_height_input = ModernLineEdit()
         self.figure_height_input.setText("5")
         self.figure_height_input.setPlaceholderText("例如 10")
         self.figure_height_input.textChanged.connect(self.render_current_chart)
-        control_layout.addWidget(self.figure_height_input, 10, 3)
 
-        control_layout.addWidget(QLabel("X轴比例"), 10, 0)
         self.x_box_aspect_input = ModernLineEdit()
         self.x_box_aspect_input.setText("1")
         self.x_box_aspect_input.setPlaceholderText("例如 1")
         self.x_box_aspect_input.textChanged.connect(self.render_current_chart)
-        control_layout.addWidget(self.x_box_aspect_input, 10, 1)
 
-        control_layout.addWidget(QLabel("Y轴比例"), 11, 2)
         self.y_box_aspect_input = ModernLineEdit()
         self.y_box_aspect_input.setText("3")
         self.y_box_aspect_input.setPlaceholderText("例如 3.5")
         self.y_box_aspect_input.textChanged.connect(self.render_current_chart)
-        control_layout.addWidget(self.y_box_aspect_input, 11, 3)
 
-        control_layout.addWidget(QLabel("Z轴比例"), 11, 0)
         self.z_box_aspect_input = ModernLineEdit()
         self.z_box_aspect_input.setText("1")
         self.z_box_aspect_input.setPlaceholderText("例如 1")
         self.z_box_aspect_input.textChanged.connect(self.render_current_chart)
-        control_layout.addWidget(self.z_box_aspect_input, 11, 1)
 
-        control_layout.addWidget(QLabel("分级数"), 12, 2)
         self.class_count_spin = SpinBox()
         self.class_count_spin.setRange(2, 9)
         self.class_count_spin.setValue(5)
         self.class_count_spin.valueChanged.connect(self.render_current_chart)
-        control_layout.addWidget(self.class_count_spin, 12, 3)
 
-        control_layout.addWidget(QLabel("拉伸方式"), 12, 0)
         self.stretch_combo = ModernComboBox()
         for value, label in self.STRETCH_METHODS:
             self.stretch_combo.addItem(label, userData=value)
         self.stretch_combo.currentIndexChanged.connect(self.render_current_chart)
-        control_layout.addWidget(self.stretch_combo, 12, 1)
 
-        control_layout.addWidget(QLabel("投影"), 13, 0)
         self.projection_combo = ModernComboBox()
         for value, label in self.PROJECTION_PRESETS:
             self.projection_combo.addItem(label, userData=value)
         self.projection_combo.currentIndexChanged.connect(self.on_projection_changed)
-        control_layout.addWidget(self.projection_combo, 13, 1)
 
         self.custom_projection_input = ModernLineEdit()
         self.custom_projection_input.setPlaceholderText("输入 EPSG:xxxx 或 proj 字符串")
         self.custom_projection_input.textChanged.connect(self.render_current_chart)
-        control_layout.addWidget(self.custom_projection_input, 13, 2, 1, 2)
+
+        self.spatial_mode_combo = ModernComboBox()
+        for value, label in self.SPATIAL_DISPLAY_OPTIONS:
+            self.spatial_mode_combo.addItem(label, userData=value)
+        self.spatial_mode_combo.currentIndexChanged.connect(self.on_display_mode_changed)
+
+        self.temporal_mode_combo = ModernComboBox()
+        for value, label in self.TEMPORAL_DISPLAY_OPTIONS:
+            self.temporal_mode_combo.addItem(label, userData=value)
+        self.temporal_mode_combo.currentIndexChanged.connect(self.on_display_mode_changed)
+
+        self.location_combo = ModernComboBox()
+        self.location_combo.currentIndexChanged.connect(self.render_current_chart)
+        self.location_field_combo = ModernComboBox()
+        self.location_field_combo.currentIndexChanged.connect(self.on_location_field_changed)
+
+        self.create_control_section(
+            control_layout,
+            "general",
+            "基础设置",
+            "先选图表，再补充标题、图例和精度等通用参数。",
+        )
+        self.add_control_field("general", "chart", "图表", self.chart_combo)
+        self.add_control_field("general", "beta", "统计量", self.beta_combo)
+        self.add_control_field("general", "title", "标题", self.title_input)
+        self.add_control_field("general", "legend", "图例名称", self.legend_input)
+        self.add_control_field("general", "font", "字体", self.font_combo)
+        self.add_control_field("general", "decimal", "小数位", self.decimal_spin)
+        self.add_control_field("general", "palette", "配色", self.palette_combo)
+
+        self.create_control_section(
+            control_layout,
+            "filters",
+            "筛选条件",
+            "只在当前图表需要时间切片或分类时展示对应筛选项。",
+        )
+        self.add_control_field("filters", "time_column", "时间列", self.time_column_combo)
+        self.add_control_field("filters", "time_value", "时间点", self.time_value_combo)
+        self.add_control_field("filters", "category", "分类列", self.category_combo)
+
+        self.create_control_section(
+            control_layout,
+            "spatial",
+            "空间与展示模式",
+            "空间图使用坐标字段，时空模型可切换按时间切片、汇总或单地点展示。",
+        )
+        self.add_control_field("spatial", "coordinate_type", "坐标类型", self.coordinate_type_combo)
+        self.add_control_field("spatial", "longitude", self.longitude_label.text(), self.longitude_combo, label_widget=self.longitude_label)
+        self.add_control_field("spatial", "latitude", self.latitude_label.text(), self.latitude_combo, label_widget=self.latitude_label)
+        self.add_control_field("spatial", "spatial_mode", "空间展示", self.spatial_mode_combo)
+        self.add_control_field("spatial", "temporal_mode", "时间展示", self.temporal_mode_combo)
+        self.add_control_field("spatial", "location_field", "地点字段", self.location_field_combo)
+        self.add_control_field("spatial", "location", "地点", self.location_combo)
+
+        self.create_control_section(
+            control_layout,
+            "regional",
+            "区域着色与底图",
+            "只有区域着色图需要边界文件、投影和分级参数。",
+        )
+        self.add_custom_control("regional", "vector_actions", self.vector_action_row)
+        self.add_custom_control("regional", "vector_label", self.vector_label)
+        self.add_custom_control("regional", "raster_label", self.raster_label)
+        self.add_control_field("regional", "stretch", "拉伸方式", self.stretch_combo)
+        self.add_control_field("regional", "class_count", "分级数", self.class_count_spin)
+        self.add_control_field("regional", "projection", "投影", self.projection_combo)
+        self.add_control_field("regional", "custom_projection", "自定义投影", self.custom_projection_input)
+
+        self.create_control_section(
+            control_layout,
+            "three_d",
+            "3D 图设置",
+            "仅在时间-分类 3D 图中展示布局和三轴比例参数。",
+        )
+        self.add_control_field("three_d", "time_slot_width", "时间占位宽度", self.time_slot_width_spin)
+        self.add_control_field("three_d", "category_slot_width", "分类占位宽度", self.category_slot_width_spin)
+        self.add_control_field("three_d", "figure_width", "图宽", self.figure_width_input)
+        self.add_control_field("three_d", "figure_height", "图高", self.figure_height_input)
+        self.add_control_field("three_d", "x_box_aspect", "X 轴比例", self.x_box_aspect_input)
+        self.add_control_field("three_d", "y_box_aspect", "Y 轴比例", self.y_box_aspect_input)
+        self.add_control_field("three_d", "z_box_aspect", "Z 轴比例", self.z_box_aspect_input)
 
         self.chart_hint_label = BodyLabel("请先加载包含 summary / coefficients 的结果文件。")
         self.chart_hint_label.setWordWrap(True)
         self.chart_hint_label.setStyleSheet("color: #5b6b84;")
-        control_layout.addWidget(self.chart_hint_label, 14, 0, 1, 4)
+        control_layout.addWidget(self.chart_hint_label)
         layout.addWidget(control_panel)
 
         chart_panel = FrostedPanel()
@@ -363,6 +424,48 @@ class DataVisualizationPage(QWidget):
         self.populate_font_combo()
         self.populate_palette_combo()
         self.update_spatial_control_state()
+
+    @staticmethod
+    def create_action_row(*widgets):
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        for widget in widgets:
+            layout.addWidget(widget)
+        layout.addStretch(1)
+        return row
+
+    def create_control_section(self, parent_layout, section_key, title, description):
+        section = QWidget()
+        layout = QVBoxLayout(section)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        layout.addWidget(SectionHeader(title, description))
+        self.control_sections[section_key] = section
+        self.control_section_bodies[section_key] = layout
+        parent_layout.addWidget(section)
+        return section
+
+    def add_control_field(self, section_key, field_key, label_text, widget, label_widget=None):
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+        label = label_widget or QLabel(label_text)
+        label.setMinimumWidth(92)
+        layout.addWidget(label)
+        layout.addWidget(widget, 1)
+        self.control_section_bodies[section_key].addWidget(row)
+        self.control_rows[field_key] = row
+        self.control_field_sections[field_key] = section_key
+        return row
+
+    def add_custom_control(self, section_key, field_key, widget):
+        self.control_section_bodies[section_key].addWidget(widget)
+        self.control_rows[field_key] = widget
+        self.control_field_sections[field_key] = section_key
+        return widget
 
     def select_file(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "选择结果 Excel 文件", "", "Excel 文件 (*.xlsx)")
@@ -424,18 +527,24 @@ class DataVisualizationPage(QWidget):
             return
 
         self.chart_specs = self.dataset.available_charts()
+        self.chart_combo.blockSignals(True)
         self.chart_combo.clear()
         for spec in self.chart_specs:
             self.chart_combo.addItem(spec.label, userData=spec)
+        self.chart_combo.blockSignals(False)
 
+        self.beta_combo.blockSignals(True)
         self.beta_combo.clear()
         for column, display_name in self.dataset.get_metric_display_names():
             self.beta_combo.addItem(display_name, userData=column)
+        self.beta_combo.blockSignals(False)
 
         self.coordinate_columns = self.dataset.spatial_candidate_columns()
         self.time_columns = self.dataset.temporal_candidate_columns()
         self.category_columns = self.dataset.category_candidate_columns()
+        self.location_field_columns = self.dataset.location_candidate_columns()
         self.populate_coordinate_combos()
+        self.populate_location_field_combo()
         self.populate_time_combos()
         self.populate_category_combo()
 
@@ -496,6 +605,9 @@ class DataVisualizationPage(QWidget):
         self.render_current_chart()
 
     def populate_coordinate_combos(self):
+        self.longitude_combo.blockSignals(True)
+        self.latitude_combo.blockSignals(True)
+        self.coordinate_type_combo.blockSignals(True)
         self.longitude_combo.clear()
         self.latitude_combo.clear()
 
@@ -515,8 +627,84 @@ class DataVisualizationPage(QWidget):
         elif len(self.coordinate_columns) >= 2:
             self.longitude_combo.setCurrentIndex(0)
             self.latitude_combo.setCurrentIndex(1)
+        self.apply_coordinate_type_default(defaults)
+        self.coordinate_type_combo.blockSignals(False)
+        self.longitude_combo.blockSignals(False)
+        self.latitude_combo.blockSignals(False)
+
+    def apply_coordinate_type_default(self, defaults):
+        inferred = self.infer_coordinate_type(defaults)
+        index = self.coordinate_type_combo.findData(inferred)
+        if index >= 0:
+            self.coordinate_type_combo.setCurrentIndex(index)
+        self.update_coordinate_labels()
+
+    @staticmethod
+    def infer_coordinate_type(columns):
+        joined = " ".join(str(column).lower() for column in columns if column)
+        geographic_keywords = ["经度", "纬度", "lon", "lng", "lat", "long"]
+        if any(keyword in joined for keyword in geographic_keywords):
+            return "geographic"
+        return "projected"
+
+    def on_coordinate_type_changed(self):
+        self.update_coordinate_labels()
+        self.populate_location_combo()
+        self.render_current_chart()
+
+    def update_coordinate_labels(self):
+        coordinate_type = self.coordinate_type_combo.currentData()
+        if coordinate_type == "projected":
+            self.longitude_label.setText("X 坐标列")
+            self.latitude_label.setText("Y 坐标列")
+        else:
+            self.longitude_label.setText("经度列")
+            self.latitude_label.setText("纬度列")
+
+    def populate_location_combo(self):
+        self.location_combo.blockSignals(True)
+        self.location_combo.clear()
+        if self.dataset is None:
+            self.location_combo.blockSignals(False)
+            return
+        self.location_combo.addItem("请选择地点", userData=None)
+        location_column = self.location_field_combo.currentData()
+        x_col = self.longitude_combo.currentData()
+        y_col = self.latitude_combo.currentData()
+        self.location_options = self.dataset.location_value_options(location_column=location_column, x_column=x_col, y_column=y_col)
+        for label, value in self.location_options:
+            self.location_combo.addItem(label, userData=value)
+        self.location_combo.setCurrentIndex(0)
+        self.location_combo.blockSignals(False)
+
+    def populate_location_field_combo(self):
+        self.location_field_combo.blockSignals(True)
+        self.location_field_combo.clear()
+        if self.dataset is None:
+            self.location_field_combo.blockSignals(False)
+            self.populate_location_combo()
+            return
+        self.location_field_combo.addItem("使用坐标组合", userData=None)
+        for column in self.location_field_columns:
+            self.location_field_combo.addItem(str(column), userData=column)
+
+        preferred = next((column for column in self.location_field_columns if str(column).startswith("Original_")), None)
+        preferred = preferred or next(
+            (
+                column for column in self.location_field_columns
+                if any(keyword in str(column).lower() for keyword in ("name", "region", "city", "county", "district", "地点", "地区", "区域"))
+            ),
+            None,
+        )
+        if preferred is not None:
+            index = self.location_field_combo.findData(preferred)
+            if index >= 0:
+                self.location_field_combo.setCurrentIndex(index)
+        self.location_field_combo.blockSignals(False)
+        self.populate_location_combo()
 
     def populate_time_combos(self):
+        self.time_column_combo.blockSignals(True)
         self.time_column_combo.clear()
         for column in self.time_columns:
             self.time_column_combo.addItem(str(column), userData=column)
@@ -528,24 +716,30 @@ class DataVisualizationPage(QWidget):
         elif self.time_columns:
             self.time_column_combo.setCurrentIndex(0)
 
+        self.time_column_combo.blockSignals(False)
         self.refresh_time_value_options()
 
     def populate_category_combo(self):
+        self.category_combo.blockSignals(True)
         self.category_combo.clear()
         for column in self.category_columns:
             self.category_combo.addItem(str(column), userData=column)
         if self.category_columns:
             self.category_combo.setCurrentIndex(0)
+        self.category_combo.blockSignals(False)
 
     def refresh_time_value_options(self):
+        self.time_value_combo.blockSignals(True)
         self.time_value_combo.clear()
         time_column = self.time_column_combo.currentData()
         if not self.dataset or not time_column:
+            self.time_value_combo.blockSignals(False)
             return
         self.time_value_combo.addItem("全部时间", userData=None)
         for label, value in self.dataset.time_value_options(time_column):
             self.time_value_combo.addItem(label, userData=value)
         self.time_value_combo.setCurrentIndex(0)
+        self.time_value_combo.blockSignals(False)
 
     def update_metrics(self):
         if self.dataset is None:
@@ -576,6 +770,11 @@ class DataVisualizationPage(QWidget):
         return projection
 
     def current_render_options(self):
+        spec = self.current_chart_spec()
+        spatial_mode = self.spatial_mode_combo.currentData() if spec and ChartFactory.chart_uses_spatial_coordinates(spec.key) else "time_slice"
+        temporal_mode = self.temporal_mode_combo.currentData() if spec and spec.key == "coefficient_temporal" else "aggregate_space"
+        location_column = self.location_field_combo.currentData() if temporal_mode == "single_location" else None
+        location_value = self.location_combo.currentData() if temporal_mode == "single_location" else None
         return RenderOptions(
             vector_path=self.vector_file_path,
             raster_path=self.raster_file_path,
@@ -587,6 +786,10 @@ class DataVisualizationPage(QWidget):
             latitude_column=self.latitude_combo.currentData(),
             time_column=self.time_column_combo.currentData(),
             time_value=self.time_value_combo.currentData(),
+            spatial_mode=spatial_mode or "time_slice",
+            temporal_mode=temporal_mode or "aggregate_space",
+            location_column=location_column,
+            location_value=location_value,
             category_column=self.category_combo.currentData(),
             decimal_places=self.decimal_spin.value(),
             font_family=self.font_combo.currentData(),
@@ -610,42 +813,113 @@ class DataVisualizationPage(QWidget):
         except ValueError:
             return default
 
-    def on_chart_changed(self):
-        self.update_spatial_control_state()
-        self.render_current_chart()
+    def build_control_policy(self, spec):
+        visible_fields = {"chart", "title", "legend", "font", "decimal"}
+        if spec is None:
+            return ChartControlPolicy(tuple(visible_fields))
 
-    def on_time_column_changed(self):
-        self.refresh_time_value_options()
-        self.render_current_chart()
+        uses_temporal_dataset = bool(self.dataset is not None and self.dataset.has_temporal())
+        single_location_mode = bool(spec.key == "coefficient_temporal" and self.temporal_mode_combo.currentData() == "single_location")
+        uses_location_coordinates = bool(single_location_mode and self.location_field_combo.currentData() is None)
 
-    def on_decimal_changed(self):
-        self.update_metrics()
-        self.render_current_chart()
+        if spec.requires_beta:
+            visible_fields.add("beta")
 
-    def on_projection_changed(self):
-        is_custom = self.projection_combo.currentData() == "custom"
-        self.custom_projection_input.setEnabled(is_custom)
-        if not is_custom:
-            self.custom_projection_input.clear()
-        self.render_current_chart()
+        if ChartFactory.chart_uses_colormap(spec.key):
+            visible_fields.add("palette")
 
-    def update_spatial_control_state(self):
-        spec = self.current_chart_spec()
+        if ChartFactory.chart_uses_time_column(spec.key) and self.time_columns:
+            visible_fields.add("time_column")
+
+        if ChartFactory.chart_uses_time_slice(spec.key) and self.time_columns:
+            visible_fields.add("time_value")
+
+        if ChartFactory.chart_uses_category_column(spec.key) and self.category_columns:
+            visible_fields.add("category")
+
+        if ChartFactory.chart_uses_spatial_coordinates(spec.key) and len(self.coordinate_columns) >= 2:
+            visible_fields.update({"coordinate_type", "longitude", "latitude"})
+        elif uses_location_coordinates and len(self.coordinate_columns) >= 2:
+            visible_fields.update({"coordinate_type", "longitude", "latitude"})
+
+        if uses_temporal_dataset and ChartFactory.chart_uses_spatial_coordinates(spec.key):
+            visible_fields.add("spatial_mode")
+            if self.spatial_mode_combo.currentData() == "aggregate_time":
+                visible_fields.discard("time_value")
+
+        if uses_temporal_dataset and spec.key == "coefficient_temporal":
+            visible_fields.add("temporal_mode")
+            if self.temporal_mode_combo.currentData() == "single_location":
+                visible_fields.add("location_field")
+                visible_fields.add("location")
+
+        if spec.key == "coefficient_3d":
+            visible_fields.update(
+                {
+                    "time_slot_width",
+                    "category_slot_width",
+                    "figure_width",
+                    "figure_height",
+                    "x_box_aspect",
+                    "y_box_aspect",
+                    "z_box_aspect",
+                }
+            )
+
+        if ChartFactory.chart_requires_spatial_options(spec.key):
+            visible_fields.update(
+                {
+                    "vector_actions",
+                    "vector_label",
+                    "raster_label",
+                    "stretch",
+                    "class_count",
+                    "projection",
+                }
+            )
+            if self.projection_combo.currentData() == "custom":
+                visible_fields.add("custom_projection")
+
+        return ChartControlPolicy(tuple(sorted(visible_fields)))
+
+    def apply_control_policy(self, policy):
+        for field_key, row in self.control_rows.items():
+            row.setVisible(policy.includes(field_key))
+
+        for section_key, section in self.control_sections.items():
+            has_visible_field = any(
+                policy.includes(field_key) for field_key, owner in self.control_field_sections.items() if owner == section_key
+            )
+            section.setVisible(has_visible_field)
+
+    def update_control_enabled_state(self, spec):
         uses_coordinates = bool(spec and ChartFactory.chart_uses_spatial_coordinates(spec.key))
-        requires_spatial = bool(spec and ChartFactory.chart_requires_spatial_options(spec.key))
         uses_time_column = bool(spec and ChartFactory.chart_uses_time_column(spec.key))
         uses_time_slice = bool(spec and ChartFactory.chart_uses_time_slice(spec.key))
         uses_category = bool(spec and ChartFactory.chart_uses_category_column(spec.key))
         uses_time_slot_width = bool(spec and spec.key == "coefficient_3d")
-        uses_palette = bool(spec and ChartFactory.chart_uses_colormap(spec.key))
-        for control in (self.longitude_combo, self.latitude_combo):
-            control.setEnabled(uses_coordinates)
-        for control in (self.time_column_combo,):
-            control.setEnabled(uses_time_column)
-        for control in (self.time_value_combo,):
-            control.setEnabled(uses_time_slice)
-        for control in (self.category_combo,):
-            control.setEnabled(uses_category)
+        uses_temporal_dataset = bool(self.dataset is not None and self.dataset.has_temporal())
+        uses_temporal_chart = bool(spec and spec.key == "coefficient_temporal")
+        single_location_mode = bool(uses_temporal_chart and self.temporal_mode_combo.currentData() == "single_location")
+        has_coordinate_candidates = len(self.coordinate_columns) >= 2
+        has_time_candidates = bool(self.time_columns)
+        has_category_candidates = bool(self.category_columns)
+        uses_location_coordinates = bool(single_location_mode and self.location_field_combo.currentData() is None)
+
+        self.coordinate_type_combo.setEnabled(has_coordinate_candidates and (uses_coordinates or uses_location_coordinates))
+        self.longitude_combo.setEnabled(has_coordinate_candidates and (uses_coordinates or uses_location_coordinates))
+        self.latitude_combo.setEnabled(has_coordinate_candidates and (uses_coordinates or uses_location_coordinates))
+        self.time_column_combo.setEnabled(has_time_candidates and uses_time_column)
+        self.time_value_combo.setEnabled(
+            has_time_candidates
+            and uses_time_slice
+            and (not uses_temporal_dataset or self.spatial_mode_combo.currentData() != "aggregate_time")
+        )
+        self.category_combo.setEnabled(has_category_candidates and uses_category)
+        self.spatial_mode_combo.setEnabled(has_coordinate_candidates and uses_coordinates and uses_temporal_dataset)
+        self.temporal_mode_combo.setEnabled(uses_temporal_chart and uses_temporal_dataset)
+        self.location_field_combo.setEnabled(single_location_mode and bool(self.location_field_columns))
+        self.location_combo.setEnabled(single_location_mode)
         self.time_slot_width_spin.setEnabled(uses_time_slot_width)
         self.category_slot_width_spin.setEnabled(uses_time_slot_width)
         self.figure_width_input.setEnabled(uses_time_slot_width)
@@ -653,11 +927,49 @@ class DataVisualizationPage(QWidget):
         self.x_box_aspect_input.setEnabled(uses_time_slot_width)
         self.y_box_aspect_input.setEnabled(uses_time_slot_width)
         self.z_box_aspect_input.setEnabled(uses_time_slot_width)
-        self.palette_combo.setEnabled(uses_palette)
-        for control in (self.class_count_spin, self.stretch_combo, self.projection_combo, self.custom_projection_input):
-            control.setEnabled(requires_spatial)
-        if requires_spatial:
-            self.custom_projection_input.setEnabled(self.projection_combo.currentData() == "custom")
+        self.palette_combo.setEnabled(bool(spec and ChartFactory.chart_uses_colormap(spec.key)))
+
+        requires_spatial = bool(spec and ChartFactory.chart_requires_spatial_options(spec.key))
+        self.stretch_combo.setEnabled(requires_spatial)
+        self.class_count_spin.setEnabled(requires_spatial)
+        self.projection_combo.setEnabled(requires_spatial)
+        self.custom_projection_input.setEnabled(requires_spatial and self.projection_combo.currentData() == "custom")
+
+    def on_chart_changed(self):
+        self.update_spatial_control_state()
+        self.render_current_chart()
+
+    def on_coordinate_selection_changed(self):
+        self.populate_location_combo()
+        self.render_current_chart()
+
+    def on_time_column_changed(self):
+        self.refresh_time_value_options()
+        self.render_current_chart()
+
+    def on_display_mode_changed(self):
+        self.update_spatial_control_state()
+        self.render_current_chart()
+
+    def on_location_field_changed(self):
+        self.populate_location_combo()
+        self.update_spatial_control_state()
+        self.render_current_chart()
+
+    def on_decimal_changed(self):
+        self.update_metrics()
+        self.render_current_chart()
+
+    def on_projection_changed(self):
+        if self.projection_combo.currentData() != "custom":
+            self.custom_projection_input.clear()
+        self.update_spatial_control_state()
+        self.render_current_chart()
+
+    def update_spatial_control_state(self):
+        spec = self.current_chart_spec()
+        self.apply_control_policy(self.build_control_policy(spec))
+        self.update_control_enabled_state(spec)
         self.update_beta_control_state(spec)
 
     def update_beta_control_state(self, spec):
@@ -712,8 +1024,17 @@ class DataVisualizationPage(QWidget):
                 parts.append(f"坐标：{render_options.longitude_column} / {render_options.latitude_column}")
         if ChartFactory.chart_uses_time_column(spec.key) and render_options.time_column:
             parts.append(f"时间列：{render_options.time_column}")
-        if ChartFactory.chart_uses_time_slice(spec.key) and render_options.time_value:
+        if ChartFactory.chart_uses_time_slice(spec.key) and render_options.time_value is not None:
             parts.append(f"时间点：{render_options.time_value}")
+        if self.dataset is not None and self.dataset.has_temporal():
+            if ChartFactory.chart_uses_spatial_coordinates(spec.key):
+                parts.append(f"空间展示：{self.spatial_mode_combo.currentText()}")
+            if spec.key == "coefficient_temporal":
+                parts.append(f"时间展示：{self.temporal_mode_combo.currentText()}")
+                if render_options.location_column:
+                    parts.append(f"地点字段：{render_options.location_column}")
+                if render_options.location_value is not None:
+                    parts.append(f"地点：{self.location_combo.currentText()}")
         if ChartFactory.chart_uses_category_column(spec.key) and render_options.category_column:
             parts.append(f"分类列：{render_options.category_column}")
         if render_options.font_family:

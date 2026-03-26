@@ -10,7 +10,10 @@ class SignificanceRenderOptions:
     longitude_column: str | None = None
     latitude_column: str | None = None
     time_column: str | None = None
-    time_value: str | None = None
+    time_value: object | None = None
+    spatial_mode: str = "time_slice"
+    temporal_mode: str = "aggregate_space"
+    location_value: object | None = None
     figure_title: str | None = None
     decimal_places: int = 4
     font_family: str | None = "Microsoft YaHei"

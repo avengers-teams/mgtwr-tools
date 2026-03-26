@@ -20,6 +20,11 @@ from app.presentation.views.widgets.input import ModernLineEdit
 
 
 class CoefficientsToShpWindow(QMainWindow):
+    COORDINATE_TYPE_OPTIONS = [
+        ("geographic", "经纬度 (经度 / 纬度)"),
+        ("projected", "平面坐标 (X / Y)"),
+    ]
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("coefficients 转 Shapefile")
@@ -68,10 +73,18 @@ class CoefficientsToShpWindow(QMainWindow):
         option_layout.addLayout(sheet_row)
 
         coord_row = QHBoxLayout()
-        coord_row.addWidget(QLabel("经度列"))
+        coord_row.addWidget(QLabel("坐标类型"))
+        self.coordinate_type_combo = ModernComboBox()
+        for value, label in self.COORDINATE_TYPE_OPTIONS:
+            self.coordinate_type_combo.addItem(label, userData=value)
+        self.coordinate_type_combo.currentIndexChanged.connect(self.update_coordinate_labels)
+        coord_row.addWidget(self.coordinate_type_combo)
+        self.longitude_label = QLabel("经度列")
+        coord_row.addWidget(self.longitude_label)
         self.longitude_combo = ModernComboBox()
         coord_row.addWidget(self.longitude_combo)
-        coord_row.addWidget(QLabel("纬度列"))
+        self.latitude_label = QLabel("纬度列")
+        coord_row.addWidget(self.latitude_label)
         self.latitude_combo = ModernComboBox()
         coord_row.addWidget(self.latitude_combo)
         option_layout.addLayout(coord_row)
@@ -171,6 +184,7 @@ class CoefficientsToShpWindow(QMainWindow):
             self.latitude_combo.setCurrentIndex(lat_index)
         elif self.latitude_combo.count() > 1:
             self.latitude_combo.setCurrentIndex(1)
+        self.apply_coordinate_type_default()
 
     @staticmethod
     def find_preferred_column(combo, keywords):
@@ -179,6 +193,34 @@ class CoefficientsToShpWindow(QMainWindow):
             if any(keyword in column for keyword in keywords):
                 return index
         return -1
+
+    def apply_coordinate_type_default(self):
+        columns = [
+            self.longitude_combo.currentData(),
+            self.latitude_combo.currentData(),
+        ]
+        inferred = self.infer_coordinate_type(columns)
+        index = self.coordinate_type_combo.findData(inferred)
+        if index >= 0:
+            self.coordinate_type_combo.setCurrentIndex(index)
+        self.update_coordinate_labels()
+
+    @staticmethod
+    def infer_coordinate_type(columns):
+        joined = " ".join(str(column).lower() for column in columns if column)
+        geographic_keywords = ["经度", "纬度", "lon", "lng", "lat", "long"]
+        if any(keyword in joined for keyword in geographic_keywords):
+            return "geographic"
+        return "projected"
+
+    def update_coordinate_labels(self):
+        coordinate_type = self.coordinate_type_combo.currentData()
+        if coordinate_type == "projected":
+            self.longitude_label.setText("X 坐标列")
+            self.latitude_label.setText("Y 坐标列")
+        else:
+            self.longitude_label.setText("经度列")
+            self.latitude_label.setText("纬度列")
 
     def export_shapefile(self):
         if self.dataframe is None:

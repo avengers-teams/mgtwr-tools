@@ -69,9 +69,9 @@ class ExcelDataLoader:
             series = converted[column]
             if pd.api.types.is_numeric_dtype(series):
                 continue
-            datetime_series = pd.to_datetime(series, errors="coerce")
+            datetime_series = pd.to_datetime(series, errors="coerce", format="mixed")
             if (datetime_series.notna() | series.isna()).all():
-                converted[column] = datetime_series.map(lambda value: value.toordinal() if pd.notna(value) else value)
+                converted[column] = datetime_series
             else:
                 numeric_series = pd.to_numeric(series, errors="coerce")
                 invalid_mask = numeric_series.isna() & series.notna()

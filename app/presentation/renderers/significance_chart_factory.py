@@ -79,8 +79,10 @@ class SignificanceChartFactory:
 
     @classmethod
     def _plot_spatial(cls, dataset, axes, t_column, render_options):
-        frame = cls._filtered_coefficients(dataset, render_options)
         x_col, y_col = cls._resolve_coordinate_columns(dataset, render_options)
+        frame = cls._filtered_coefficients(dataset, render_options)
+        if cls._should_aggregate_spatial(dataset, render_options):
+            frame = cls._aggregate_spatial_frame(frame, x_col, y_col, [t_column])
         spatial = frame[[x_col, y_col, t_column]].copy()
         spatial[x_col] = pd.to_numeric(spatial[x_col], errors="coerce")
         spatial[y_col] = pd.to_numeric(spatial[y_col], errors="coerce")
@@ -98,7 +100,10 @@ class SignificanceChartFactory:
         if not sig.empty:
             axes.scatter(sig[x_col], sig[y_col], s=32, c="#0f6cbd", label="显著", alpha=0.92, edgecolors="none")
 
-        axes.set_title(cls._title(render_options, f"{dataset.metric_base_name(t_column)} 显著性空间分布"))
+        title = f"{dataset.metric_base_name(t_column)} 显著性空间分布"
+        if cls._should_aggregate_spatial(dataset, render_options):
+            title += "（时间汇总）"
+        axes.set_title(cls._title(render_options, title))
         axes.set_xlabel(str(x_col))
         axes.set_ylabel(str(y_col))
         axes.grid(alpha=0.18)
@@ -119,7 +124,10 @@ class SignificanceChartFactory:
         grouped = cls._sort_frame_by_time(grouped, time_column)
         axes.plot(grouped[time_column], grouped["__significant__"], color="#0f6cbd", linewidth=2.0, marker="o")
         axes.set_ylim(0, 1.05)
-        axes.set_title(cls._title(render_options, f"{dataset.metric_base_name(t_column)} 显著性时间趋势"))
+        title = f"{dataset.metric_base_name(t_column)} 显著性时间趋势"
+        if cls._is_single_location_mode(render_options):
+            title += f"（{cls._location_label(dataset, render_options)}）"
+        axes.set_title(cls._title(render_options, title))
         axes.set_xlabel(str(time_column))
         axes.set_ylabel("显著占比")
         axes.grid(alpha=0.18)
@@ -129,8 +137,10 @@ class SignificanceChartFactory:
     @classmethod
     def _plot_coefficient_spatial(cls, dataset, axes, t_column, render_options):
         beta_column = SignificancePolicy.resolve_linked_beta_column(dataset, t_column, render_options)
-        frame = cls._filtered_coefficients(dataset, render_options)
         x_col, y_col = cls._resolve_coordinate_columns(dataset, render_options)
+        frame = cls._filtered_coefficients(dataset, render_options)
+        if cls._should_aggregate_spatial(dataset, render_options):
+            frame = cls._aggregate_spatial_frame(frame, x_col, y_col, [t_column, beta_column])
         data = frame[[x_col, y_col, t_column, beta_column]].copy()
         data[x_col] = pd.to_numeric(data[x_col], errors="coerce")
         data[y_col] = pd.to_numeric(data[y_col], errors="coerce")
@@ -160,7 +170,10 @@ class SignificanceChartFactory:
             )
 
         metric_name = dataset.metric_base_name(beta_column)
-        axes.set_title(cls._title(render_options, f"{metric_name} 显著系数空间图"))
+        title = f"{metric_name} 显著系数空间图"
+        if cls._should_aggregate_spatial(dataset, render_options):
+            title += "（时间汇总）"
+        axes.set_title(cls._title(render_options, title))
         axes.set_xlabel(str(x_col))
         axes.set_ylabel(str(y_col))
         axes.grid(alpha=0.18)
@@ -189,7 +202,10 @@ class SignificanceChartFactory:
 
         axes.plot(grouped[time_column], grouped["__all__"], color="#94a3b8", linewidth=1.8, marker="o", label="全部样本")
         axes.plot(grouped[time_column], grouped["__sig__"], color="#0f6cbd", linewidth=2.2, marker="o", label="显著样本")
-        axes.set_title(cls._title(render_options, f"{dataset.metric_base_name(beta_column)} 显著系数时间趋势"))
+        title = f"{dataset.metric_base_name(beta_column)} 显著系数时间趋势"
+        if cls._is_single_location_mode(render_options):
+            title += f"（{cls._location_label(dataset, render_options)}）"
+        axes.set_title(cls._title(render_options, title))
         axes.set_xlabel(str(time_column))
         axes.set_ylabel("平均系数")
         axes.grid(alpha=0.18)
@@ -202,13 +218,67 @@ class SignificanceChartFactory:
     @staticmethod
     def _filtered_coefficients(dataset, render_options, apply_time_slice=True):
         frame = dataset.coefficients.copy()
-        if not apply_time_slice or not render_options or not render_options.time_value:
+        frame = SignificanceChartFactory._apply_location_filter(frame, dataset, render_options)
+        if (
+            not apply_time_slice
+            or not render_options
+            or render_options.time_value is None
+            or SignificanceChartFactory._should_aggregate_spatial(dataset, render_options)
+        ):
             return frame
         time_column = SignificanceChartFactory._resolve_time_column(dataset, render_options)
-        filtered = frame.loc[frame[time_column].astype(str) == str(render_options.time_value)].copy()
+        filtered = frame.loc[SignificanceChartFactory._series_matches_value(frame[time_column], render_options.time_value)].copy()
         if filtered.empty:
             raise ValueError(f"时间点 {render_options.time_value} 没有对应数据")
         return filtered
+
+    @staticmethod
+    def _series_matches_value(series, value):
+        if isinstance(value, pd.Timestamp):
+            converted = pd.to_datetime(series, errors="coerce", format="mixed")
+            return converted == value
+        return (series == value) | (series.astype(str) == str(value))
+
+    @staticmethod
+    def _is_single_location_mode(render_options):
+        return bool(render_options is not None and render_options.temporal_mode == "single_location" and render_options.location_value is not None)
+
+    @staticmethod
+    def _should_aggregate_spatial(dataset, render_options):
+        return bool(dataset.has_temporal() and render_options is not None and render_options.spatial_mode == "aggregate_time")
+
+    @classmethod
+    def _apply_location_filter(cls, frame, dataset, render_options):
+        if not cls._is_single_location_mode(render_options):
+            return frame
+        x_col, y_col = cls._resolve_coordinate_columns(dataset, render_options)
+        x_value, y_value = render_options.location_value
+        mask = cls._series_matches_value(frame[x_col], x_value) & cls._series_matches_value(frame[y_col], y_value)
+        filtered = frame.loc[mask].copy()
+        if filtered.empty:
+            raise ValueError("所选地点没有对应数据")
+        return filtered
+
+    @staticmethod
+    def _aggregate_spatial_frame(frame, x_col, y_col, value_columns):
+        aggregated = frame[[x_col, y_col] + value_columns].copy()
+        aggregated[x_col] = pd.to_numeric(aggregated[x_col], errors="coerce")
+        aggregated[y_col] = pd.to_numeric(aggregated[y_col], errors="coerce")
+        for column in value_columns:
+            aggregated[column] = pd.to_numeric(aggregated[column], errors="coerce")
+        aggregated = aggregated.dropna(subset=[x_col, y_col] + value_columns)
+        if aggregated.empty:
+            return aggregated
+        return aggregated.groupby([x_col, y_col], as_index=False)[value_columns].mean()
+
+    @staticmethod
+    def _location_label(dataset, render_options):
+        if render_options is None or render_options.location_value is None:
+            return "地点"
+        x_col = render_options.longitude_column or (dataset.coord_columns[0] if len(dataset.coord_columns) >= 1 else "X")
+        y_col = render_options.latitude_column or (dataset.coord_columns[1] if len(dataset.coord_columns) >= 2 else "Y")
+        x_value, y_value = render_options.location_value
+        return dataset.format_location_label(x_value, y_value, x_col, y_col)
 
     @staticmethod
     def _resolve_coordinate_columns(dataset, render_options):

@@ -203,6 +203,7 @@ class DataAnalysis:
         self.x = None
         self.y = None
         self.t = None
+        self.t_display = None
         self.coords = None
         self.x_columns = []
         self.y_columns = []
@@ -232,7 +233,8 @@ class DataAnalysis:
         )
         self.x = self.excel_data[x]
         self.y = self.excel_data[y] if y else None
-        self.t = self.excel_data[t] if t else None
+        self.t_display = self.excel_data[t] if t else None
+        self.t = self.build_model_time_frame(self.t_display) if t else None
         self.coords = self.excel_data[coords]
         print(f"自变量列: {x}，样本数: {len(self.x)}")
         print(f"因变量列: {self.y_columns}")
@@ -308,7 +310,7 @@ class DataAnalysis:
         return rows
 
     def build_coefficients_frame(self, result, params=None):
-        variable_names = ["Intercept"] + self.x_columns
+        variable_names = self.resolve_result_variable_names(result)
         data = {}
 
         for index, column_name in enumerate(variable_names):
@@ -332,8 +334,8 @@ class DataAnalysis:
         for idx, column in enumerate(self.coord_columns):
             coefficient_df.insert(idx, column, self.coords.iloc[:, idx].values)
 
-        if self.t is not None and self.t_columns:
-            coefficient_df.insert(len(self.coord_columns), self.t_columns[0], self.t.iloc[:, 0].values)
+        if self.t_display is not None and self.t_columns:
+            coefficient_df.insert(len(self.coord_columns), self.t_columns[0], self.t_display.iloc[:, 0].values)
 
         coefficient_df.insert(0, self.y_columns[0], self.y.iloc[:, 0].values)
         return self.append_original_fields_to_coefficients(coefficient_df, params or {})
@@ -344,20 +346,76 @@ class DataAnalysis:
         if not original_fields:
             return coefficient_df
 
-        source = self.excel_data[self.coord_columns + original_fields].copy()
-        duplicate_mask = source.duplicated(subset=self.coord_columns, keep=False)
-        if duplicate_mask.any():
-            duplicate_count = int(source.loc[duplicate_mask, self.coord_columns].drop_duplicates().shape[0])
-            print(f"检测到 {duplicate_count} 组重复经纬度，追加字段时将按经纬度保留首条记录匹配")
-            source = source.drop_duplicates(subset=self.coord_columns, keep="first")
-
         rename_map = {field: f"Original_{field}" for field in original_fields}
-        source = source.rename(columns=rename_map)
-        merged = coefficient_df.merge(source, on=self.coord_columns, how="left")
+        source = self.excel_data[original_fields].rename(columns=rename_map).reset_index(drop=True)
+        coefficient_rows = coefficient_df.reset_index(drop=True)
 
-        prefixed_columns = [rename_map[field] for field in original_fields if rename_map[field] in merged.columns]
-        remaining_columns = [column for column in merged.columns if column not in prefixed_columns]
-        return merged[prefixed_columns + remaining_columns]
+        if len(source) != len(coefficient_rows):
+            raise ValueError("追加原始字段失败：结果行数与清洗后源数据行数不一致")
+
+        self.validate_coefficient_alignment(coefficient_rows)
+
+        prefixed_columns = [rename_map[field] for field in original_fields if rename_map[field] in source.columns]
+        combined = pd.concat([source[prefixed_columns], coefficient_rows], axis=1)
+        return combined
+
+    def resolve_result_variable_names(self, result):
+        beta_count = int(result.betas.shape[1])
+        if beta_count == len(self.x_columns) + 1:
+            return ["Intercept"] + self.x_columns
+        if beta_count == len(self.x_columns):
+            return list(self.x_columns)
+        raise ValueError(
+            f"结果系数列数异常：期望 {len(self.x_columns)} 或 {len(self.x_columns) + 1} 列，实际为 {beta_count}"
+        )
+
+    @staticmethod
+    def build_model_time_frame(timeframe):
+        if timeframe is None:
+            return None
+
+        numeric_time = pd.DataFrame(index=timeframe.index)
+        for column in timeframe.columns:
+            series = timeframe[column]
+            if pd.api.types.is_numeric_dtype(series):
+                numeric_time[column] = pd.to_numeric(series, errors="coerce")
+                continue
+
+            datetime_series = pd.to_datetime(series, errors="coerce", format="mixed")
+            if datetime_series.notna().sum() == 0:
+                raise ValueError(f"时间列 {column} 没有可用于建模的有效值")
+
+            origin = datetime_series.dropna().min()
+            numeric_time[column] = (datetime_series - origin).dt.total_seconds() / 86400.0
+
+        return numeric_time
+
+    def validate_coefficient_alignment(self, coefficient_df):
+        check_columns = list(self.coord_columns)
+        if self.t is not None and self.t_columns:
+            check_columns.append(self.t_columns[0])
+        if self.y is not None and self.y_columns:
+            check_columns.insert(0, self.y_columns[0])
+
+        for column in check_columns:
+            if column not in coefficient_df.columns or column not in self.excel_data.columns:
+                raise ValueError(f"追加原始字段失败：缺少对齐校验列 {column}")
+
+            expected = self.excel_data[column].reset_index(drop=True)
+            actual = coefficient_df[column].reset_index(drop=True)
+            if not expected.equals(actual):
+                mismatch_index = next(
+                    (
+                        index for index, (left, right) in enumerate(zip(expected.tolist(), actual.tolist()))
+                        if not ((pd.isna(left) and pd.isna(right)) or left == right)
+                    ),
+                    None,
+                )
+                if mismatch_index is None:
+                    mismatch_index = 0
+                raise ValueError(
+                    f"追加原始字段失败：第 {mismatch_index + 1} 行的 {column} 与分析结果不一致，请检查样本顺序"
+                )
 
     def write_search_sheets(self, writer, search_result):
         if "scores" in search_result and search_result["scores"] is not None:

@@ -40,6 +40,11 @@ MODEL_DESCRIPTIONS = {
 }
 
 TEMPORAL_MODELS = {"GTWR", "MGTWR"}
+COORDINATE_TYPE_OPTIONS = [
+    ("", "请先确认坐标类型"),
+    ("projected", "平面坐标 (X / Y)"),
+    ("geographic", "经纬度 (经度 / 纬度)"),
+]
 
 
 class MGRWRAnalysisPage(QWidget):
@@ -179,19 +184,32 @@ class MGRWRAnalysisPage(QWidget):
         variable_layout.addWidget(self.x_count_label, 3, 1, alignment=Qt.AlignRight)
         variable_layout.addWidget(self.x_clear_button, 4, 1, alignment=Qt.AlignRight)
 
-        coords_label = QLabel("坐标列（请选择 2 列）")
-        self.coords_list = ModernListWidget()
-        self.coords_list.setSelectionMode(QListWidget.MultiSelection)
-        self.coords_list.setMinimumHeight(220)
-        self.coords_list.itemSelectionChanged.connect(self.update_selection_counts)
-        self.coords_count_label = QLabel("已选 0 项")
-        self.coords_count_label.setStyleSheet("color: #64748b;")
-        self.coords_clear_button = TransparentPushButton("清空已选")
-        self.coords_clear_button.clicked.connect(lambda: self.clear_list_selection(self.coords_list))
-        variable_layout.addWidget(coords_label, 2, 2)
-        variable_layout.addWidget(self.coords_list, 2, 3)
-        variable_layout.addWidget(self.coords_count_label, 3, 3, alignment=Qt.AlignRight)
-        variable_layout.addWidget(self.coords_clear_button, 4, 3, alignment=Qt.AlignRight)
+        coords_group = QGroupBox("坐标设置")
+        coords_layout = QGridLayout(coords_group)
+        coords_layout.setHorizontalSpacing(12)
+        coords_layout.setVerticalSpacing(10)
+        coords_layout.addWidget(QLabel("坐标类型"), 0, 0)
+        self.coord_type_combo = ModernComboBox()
+        for value, label in COORDINATE_TYPE_OPTIONS:
+            self.coord_type_combo.addItem(label, userData=value)
+        self.coord_type_combo.currentIndexChanged.connect(self.on_coordinate_type_changed)
+        coords_layout.addWidget(self.coord_type_combo, 0, 1, 1, 3)
+
+        self.coord_primary_label = QLabel("第一坐标列")
+        self.coord_primary_combo = ModernComboBox()
+        coords_layout.addWidget(self.coord_primary_label, 1, 0)
+        coords_layout.addWidget(self.coord_primary_combo, 1, 1)
+
+        self.coord_secondary_label = QLabel("第二坐标列")
+        self.coord_secondary_combo = ModernComboBox()
+        coords_layout.addWidget(self.coord_secondary_label, 1, 2)
+        coords_layout.addWidget(self.coord_secondary_combo, 1, 3)
+
+        self.coord_hint_label = QLabel("请先确认坐标类型，再分别选择两列坐标字段。")
+        self.coord_hint_label.setWordWrap(True)
+        self.coord_hint_label.setStyleSheet("color: #64748b;")
+        coords_layout.addWidget(self.coord_hint_label, 2, 0, 1, 4)
+        variable_layout.addWidget(coords_group, 2, 2, 3, 2)
 
         append_label = QLabel("追加字段（导出到 coefficients）")
         self.append_fields_list = ModernListWidget()
@@ -229,6 +247,7 @@ class MGRWRAnalysisPage(QWidget):
 
         self.update_missing_value_state()
         self.update_model_state(self.model_combo.currentText())
+        self.update_coordinate_type_state()
 
     def open_help(self):
         help_path = get_resource_path("template/index.html")
@@ -298,21 +317,25 @@ class MGRWRAnalysisPage(QWidget):
         headers = self.excel_data.columns.tolist()
         self.y_combo.clear()
         self.x_list.clear()
-        self.coords_list.clear()
+        self.coord_primary_combo.clear()
+        self.coord_secondary_combo.clear()
         self.append_fields_list.clear()
         self.time_combo.clear()
 
         self.y_combo.addItems(headers)
         self.time_combo.addItems(headers)
+        self.coord_primary_combo.addItem("请选择", userData=None)
+        self.coord_secondary_combo.addItem("请选择", userData=None)
         for header in headers:
             self.x_list.addItem(QListWidgetItem(header))
-            self.coords_list.addItem(QListWidgetItem(header))
             self.append_fields_list.addItem(QListWidgetItem(header))
+            self.coord_primary_combo.addItem(header, userData=header)
+            self.coord_secondary_combo.addItem(header, userData=header)
+        self.apply_coordinate_type_defaults()
         self.update_selection_counts()
 
     def update_selection_counts(self):
         self.x_count_label.setText(f"已选 {len(self.x_list.selectedItems())} 项")
-        self.coords_count_label.setText(f"已选 {len(self.coords_list.selectedItems())} 项")
         self.append_fields_count_label.setText(f"已选 {len(self.append_fields_list.selectedItems())} 项")
 
     def clear_list_selection(self, list_widget):
@@ -345,6 +368,83 @@ class MGRWRAnalysisPage(QWidget):
 
         self.clear_layout(self.param_layout)
         self.dynamic_inputs = create_model_param_box(model, self.param_layout)
+        self.sync_convert_with_coordinate_type()
+
+    def on_coordinate_type_changed(self):
+        self.update_coordinate_type_state()
+        self.apply_coordinate_type_defaults()
+        self.sync_convert_with_coordinate_type()
+
+    def update_coordinate_type_state(self):
+        coord_type = self.current_coordinate_type()
+        labels = {
+            "geographic": ("经度列", "纬度列", "已按经纬度模式选择，分析时将自动开启平面坐标转换。"),
+            "projected": ("X 坐标列", "Y 坐标列", "已按平面坐标模式选择，分析时将保持原坐标，不再额外转换。"),
+        }
+        primary_text, secondary_text, hint_text = labels.get(
+            coord_type,
+            ("第一坐标列", "第二坐标列", "请先确认坐标类型，再分别选择两列坐标字段。"),
+        )
+        self.coord_primary_label.setText(primary_text)
+        self.coord_secondary_label.setText(secondary_text)
+        self.coord_hint_label.setText(hint_text)
+
+        enabled = bool(coord_type)
+        self.coord_primary_combo.setEnabled(enabled)
+        self.coord_secondary_combo.setEnabled(enabled)
+
+    def apply_coordinate_type_defaults(self):
+        if self.coord_primary_combo.count() == 0 or self.coord_secondary_combo.count() == 0:
+            return
+        coord_type = self.current_coordinate_type()
+        if not coord_type:
+            self.coord_primary_combo.setCurrentIndex(0)
+            self.coord_secondary_combo.setCurrentIndex(0)
+            return
+
+        if coord_type == "geographic":
+            primary_keywords = ["经度", "lng", "lon", "long"]
+            secondary_keywords = ["纬度", "lat"]
+        else:
+            primary_keywords = ["x", "横坐标", "east", "easting"]
+            secondary_keywords = ["y", "纵坐标", "north", "northing"]
+
+        primary_index = self.find_preferred_column(self.coord_primary_combo, primary_keywords)
+        secondary_index = self.find_preferred_column(self.coord_secondary_combo, secondary_keywords)
+        self.coord_primary_combo.setCurrentIndex(primary_index if primary_index >= 0 else 1)
+        if secondary_index >= 0 and secondary_index != self.coord_primary_combo.currentIndex():
+            self.coord_secondary_combo.setCurrentIndex(secondary_index)
+        elif self.coord_secondary_combo.count() > 2:
+            fallback_index = 2 if self.coord_primary_combo.currentIndex() == 1 else 1
+            self.coord_secondary_combo.setCurrentIndex(fallback_index)
+
+    @staticmethod
+    def find_preferred_column(combo, keywords):
+        for index in range(combo.count()):
+            column = str(combo.itemData(index) or "").lower()
+            if any(keyword in column for keyword in keywords):
+                return index
+        return -1
+
+    def sync_convert_with_coordinate_type(self):
+        convert_widget = self.dynamic_inputs.get("convert")
+        if convert_widget is None:
+            return
+        coord_type = self.current_coordinate_type()
+        if coord_type == "geographic":
+            convert_widget.setChecked(True)
+        elif coord_type == "projected":
+            convert_widget.setChecked(False)
+        convert_widget.setEnabled(False)
+
+    def current_coordinate_type(self):
+        return self.coord_type_combo.currentData()
+
+    def current_coordinate_columns(self):
+        return [
+            self.coord_primary_combo.currentData(),
+            self.coord_secondary_combo.currentData(),
+        ]
 
     def start_analysis(self):
         model = self.model_combo.currentText()
@@ -357,7 +457,7 @@ class MGRWRAnalysisPage(QWidget):
 
         y_var = self.y_combo.currentText()
         x_vars = [item.text() for item in self.x_list.selectedItems()]
-        coords = [item.text() for item in self.coords_list.selectedItems()]
+        coords = self.current_coordinate_columns()
         t_var = self.time_combo.currentText() if model in TEMPORAL_MODELS else None
         kernel = self.kernel_combo.currentText()
         fixed = self.fixed_combo.currentText() == "True"
@@ -373,6 +473,7 @@ class MGRWRAnalysisPage(QWidget):
 
         missing_strategy = self.current_missing_strategy()
         params["missing_strategy"] = missing_strategy
+        params["coordinate_type"] = self.current_coordinate_type()
         params["append_original_fields"] = [item.text() for item in self.append_fields_list.selectedItems()]
         if missing_strategy == "fill":
             try:
@@ -427,11 +528,16 @@ class MGRWRAnalysisPage(QWidget):
             return "导入的数据为空，无法分析"
 
         x_vars = [item.text() for item in self.x_list.selectedItems()]
-        coords = [item.text() for item in self.coords_list.selectedItems()]
+        coord_type = self.current_coordinate_type()
+        coords = self.current_coordinate_columns()
         if not x_vars:
             return "请至少选择一个自变量"
-        if len(coords) != 2:
-            return "坐标列必须且只能选择 2 列"
+        if not coord_type:
+            return "请先确认坐标类型"
+        if any(not column for column in coords):
+            return "请分别选择两列坐标字段"
+        if coords[0] == coords[1]:
+            return "两列坐标字段不能相同"
 
         y_var = self.y_combo.currentText()
         if y_var in x_vars:
@@ -454,7 +560,7 @@ class MGRWRAnalysisPage(QWidget):
         params = {
             "thread": self.get_widget_value(self.dynamic_inputs["thread"], "线程数"),
             "constant": self.get_widget_value(self.dynamic_inputs["constant"], "包含截距项"),
-            "convert": self.get_widget_value(self.dynamic_inputs["convert"], "经纬度转平面坐标"),
+            "convert": self.current_coordinate_type() == "geographic",
             "verbose": self.get_widget_value(self.dynamic_inputs["verbose"], "输出搜索过程"),
             "time_cost": self.get_widget_value(self.dynamic_inputs["time_cost"], "输出耗时"),
         }

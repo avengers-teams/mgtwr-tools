@@ -42,7 +42,11 @@ class RenderOptions:
     longitude_column: str | None = None
     latitude_column: str | None = None
     time_column: str | None = None
-    time_value: str | None = None
+    time_value: object | None = None
+    spatial_mode: str = "time_slice"
+    temporal_mode: str = "aggregate_space"
+    location_column: str | None = None
+    location_value: object | None = None
     category_column: str | None = None
     decimal_places: int = 4
     font_family: str | None = None
@@ -78,30 +82,30 @@ class VisualizationData:
         self._load()
 
     def _load(self):
-        workbook = pd.ExcelFile(self.path)
-        if "coefficients" not in workbook.sheet_names:
-            raise ValueError("结果文件缺少 coefficients 工作表，无法可视化")
+        with pd.ExcelFile(self.path) as workbook:
+            if "coefficients" not in workbook.sheet_names:
+                raise ValueError("结果文件缺少 coefficients 工作表，无法可视化")
 
-        if "summary" in workbook.sheet_names:
-            summary_df = workbook.parse("summary")
-            if {"item", "value"}.issubset(summary_df.columns):
-                self.summary = {
-                    str(row["item"]): self._parse_cell(row["value"])
-                    for _, row in summary_df.iterrows()
-                }
+            if "summary" in workbook.sheet_names:
+                summary_df = workbook.parse("summary")
+                if {"item", "value"}.issubset(summary_df.columns):
+                    self.summary = {
+                        str(row["item"]): self._parse_cell(row["value"])
+                        for _, row in summary_df.iterrows()
+                    }
 
-        if "settings" in workbook.sheet_names:
-            settings_df = workbook.parse("settings")
-            if {"parameter", "value"}.issubset(settings_df.columns):
-                self.settings = {
-                    str(row["parameter"]): self._parse_cell(row["value"])
-                    for _, row in settings_df.iterrows()
-                }
+            if "settings" in workbook.sheet_names:
+                settings_df = workbook.parse("settings")
+                if {"parameter", "value"}.issubset(settings_df.columns):
+                    self.settings = {
+                        str(row["parameter"]): self._parse_cell(row["value"])
+                        for _, row in settings_df.iterrows()
+                    }
 
-        self.coefficients = workbook.parse("coefficients")
-        self.search_scores = workbook.parse("search_scores") if "search_scores" in workbook.sheet_names else None
-        self.bw_history = workbook.parse("bw_history") if "bw_history" in workbook.sheet_names else None
-        self.tau_history = workbook.parse("tau_history") if "tau_history" in workbook.sheet_names else None
+            self.coefficients = workbook.parse("coefficients")
+            self.search_scores = workbook.parse("search_scores") if "search_scores" in workbook.sheet_names else None
+            self.bw_history = workbook.parse("bw_history") if "bw_history" in workbook.sheet_names else None
+            self.tau_history = workbook.parse("tau_history") if "tau_history" in workbook.sheet_names else None
 
         self.model = str(self.summary.get("model", "")).upper()
         self.beta_columns = [col for col in self.coefficients.columns if str(col).startswith("beta_")]
@@ -244,12 +248,57 @@ class VisualizationData:
                 ordered.append(column)
         return ordered
 
+    def location_candidate_columns(self):
+        preferred = []
+        fallback = []
+        excluded = set(self.beta_columns + self.se_columns + self.t_columns)
+        if self.time_column:
+            excluded.add(self.time_column)
+        if self.target_column:
+            excluded.add(self.target_column)
+        excluded.update(self.coord_columns)
+        excluded.update({"predicted", "residual"})
+        for column in self.coefficients.columns:
+            if column in excluded:
+                continue
+            series = self.coefficients[column].dropna()
+            if series.empty or series.nunique(dropna=True) < 2:
+                continue
+            normalized = str(column).strip().lower()
+            if series.dtype == object or str(series.dtype).startswith("category") or str(column).startswith("Original_"):
+                preferred.append(column)
+            elif normalized in {"id", "name", "region", "city", "county", "district", "地点", "地区", "区域"}:
+                preferred.append(column)
+            elif series.nunique(dropna=True) <= 100:
+                fallback.append(column)
+        ordered = []
+        for column in preferred + fallback:
+            if column not in ordered:
+                ordered.append(column)
+        return ordered
+
     def time_value_options(self, time_column):
         if not time_column or time_column not in self.coefficients.columns:
             return []
         values = self.coefficients[time_column].dropna().drop_duplicates().tolist()
         values = self._sort_temporal_values(values)
-        return [(self.format_display_value(value), str(value)) for value in values]
+        return [(self.format_display_value(value), value) for value in values]
+
+    def location_value_options(self, location_column=None, x_column=None, y_column=None):
+        if location_column and location_column in self.coefficients.columns:
+            values = self.coefficients[location_column].dropna().drop_duplicates().tolist()
+            values = self._sort_temporal_values(values)
+            return [(f"{location_column}={self.format_display_value(value)}", value) for value in values]
+        if not x_column or not y_column:
+            return []
+        if x_column not in self.coefficients.columns or y_column not in self.coefficients.columns:
+            return []
+        locations = self.coefficients[[x_column, y_column]].dropna().drop_duplicates().copy()
+        locations = self._sort_location_frame(locations, x_column, y_column)
+        return [
+            (self.format_location_label(row[x_column], row[y_column], x_column, y_column), (row[x_column], row[y_column]))
+            for _, row in locations.iterrows()
+        ]
 
     def available_charts(self):
         charts = [ChartSpec("predicted_actual", "实际值 vs 预测值"), ChartSpec("residual_histogram", "残差分布")]
@@ -348,8 +397,22 @@ class VisualizationData:
     @staticmethod
     def format_display_value(value):
         if isinstance(value, pd.Timestamp):
-            return value.strftime("%Y-%m-%d")
+            if value.normalize() == value:
+                return value.strftime("%Y-%m-%d")
+            return value.strftime("%Y-%m-%d %H:%M:%S")
         return str(value)
+
+    @classmethod
+    def format_location_label(cls, x_value, y_value, x_column, y_column):
+        return f"{x_column}={cls.format_display_value(x_value)} | {y_column}={cls.format_display_value(y_value)}"
+
+    @staticmethod
+    def _sort_location_frame(frame, x_column, y_column):
+        numeric_x = pd.to_numeric(frame[x_column], errors="coerce")
+        numeric_y = pd.to_numeric(frame[y_column], errors="coerce")
+        if numeric_x.notna().all() and numeric_y.notna().all():
+            return frame.assign(__x__=numeric_x, __y__=numeric_y).sort_values(["__x__", "__y__"]).drop(columns=["__x__", "__y__"])
+        return frame.assign(__x__=frame[x_column].astype(str), __y__=frame[y_column].astype(str)).sort_values(["__x__", "__y__"]).drop(columns=["__x__", "__y__"])
 
     @staticmethod
     def format_number(value, decimals):
@@ -471,8 +534,10 @@ class ChartFactory:
 
     @staticmethod
     def _plot_residual_spatial(dataset, axes, _beta_column, render_options):
-        coefficients = ChartFactory._filtered_coefficients(dataset, render_options, apply_time_slice=True)
         x_col, y_col = ChartFactory._resolve_coordinate_columns(dataset, render_options)
+        coefficients = ChartFactory._filtered_coefficients(dataset, render_options, apply_time_slice=True)
+        if ChartFactory._should_aggregate_spatial(dataset, render_options):
+            coefficients = ChartFactory._aggregate_spatial_frame(coefficients, x_col, y_col, ["residual"])
         numeric = ChartFactory._coerce_numeric_columns(coefficients, [x_col, y_col, "residual"])
         if numeric.empty:
             raise ValueError("坐标列或残差列没有可用于绘图的数值")
@@ -485,7 +550,10 @@ class ChartFactory:
             alpha=0.9,
             edgecolors="none",
         )
-        axes.set_title(ChartFactory._title(render_options, "残差空间分布"))
+        title = "残差空间分布"
+        if ChartFactory._should_aggregate_spatial(dataset, render_options):
+            title += "（时间汇总）"
+        axes.set_title(ChartFactory._title(render_options, title))
         axes.set_xlabel(str(x_col))
         axes.set_ylabel(str(y_col))
         axes.grid(alpha=0.18)
@@ -525,8 +593,10 @@ class ChartFactory:
     def _plot_coefficient_spatial(dataset, axes, beta_column, render_options):
         if beta_column is None:
             raise ValueError("当前图表需要选择统计量字段")
-        coefficients = ChartFactory._filtered_coefficients(dataset, render_options, apply_time_slice=True)
         x_col, y_col = ChartFactory._resolve_coordinate_columns(dataset, render_options)
+        coefficients = ChartFactory._filtered_coefficients(dataset, render_options, apply_time_slice=True)
+        if ChartFactory._should_aggregate_spatial(dataset, render_options):
+            coefficients = ChartFactory._aggregate_spatial_frame(coefficients, x_col, y_col, [beta_column])
         numeric = ChartFactory._coerce_numeric_columns(coefficients, [x_col, y_col, beta_column])
         if numeric.empty:
             raise ValueError("坐标列或统计量字段没有可用于绘图的数值")
@@ -540,7 +610,10 @@ class ChartFactory:
             edgecolors="none",
         )
         metric_label = VisualizationData.metric_display_name(beta_column)
-        axes.set_title(ChartFactory._title(render_options, f"{metric_label} 空间分布"))
+        title = f"{metric_label} 空间分布"
+        if ChartFactory._should_aggregate_spatial(dataset, render_options):
+            title += "（时间汇总）"
+        axes.set_title(ChartFactory._title(render_options, title))
         axes.set_xlabel(str(x_col))
         axes.set_ylabel(str(y_col))
         axes.grid(alpha=0.18)
@@ -580,7 +653,10 @@ class ChartFactory:
         grouped = ChartFactory._sort_frame_by_time(grouped, time_column)
         axes.plot(grouped[time_column], grouped[beta_column], color="#0f6cbd", linewidth=2.0, marker="o")
         metric_label = VisualizationData.metric_display_name(beta_column)
-        axes.set_title(ChartFactory._title(render_options, f"{metric_label} 时间趋势"))
+        title = f"{metric_label} 时间趋势"
+        if ChartFactory._is_single_location_mode(render_options):
+            title += f"（{ChartFactory._location_label(dataset, render_options)}）"
+        axes.set_title(ChartFactory._title(render_options, title))
         axes.set_xlabel(str(time_column))
         axes.set_ylabel(f"平均{VisualizationData.metric_prefix_label(beta_column)}")
         axes.grid(alpha=0.18)
@@ -800,6 +876,8 @@ class ChartFactory:
     def _join_points_to_polygons(dataset, gpd, projection, polygon_layer, value_column, render_options):
         coefficients = ChartFactory._filtered_coefficients(dataset, render_options, apply_time_slice=True)
         x_col, y_col = ChartFactory._resolve_coordinate_columns(dataset, render_options)
+        if ChartFactory._should_aggregate_spatial(dataset, render_options):
+            coefficients = ChartFactory._aggregate_spatial_frame(coefficients, x_col, y_col, [value_column])
         points = coefficients[[x_col, y_col, value_column]].copy()
         points[x_col] = pd.to_numeric(points[x_col], errors="coerce")
         points[y_col] = pd.to_numeric(points[y_col], errors="coerce")
@@ -873,13 +951,77 @@ class ChartFactory:
     @staticmethod
     def _filtered_coefficients(dataset, render_options, apply_time_slice):
         coefficients = dataset.coefficients.copy()
-        if not apply_time_slice or render_options is None or not render_options.time_value:
+        coefficients = ChartFactory._apply_location_filter(coefficients, dataset, render_options)
+        if (
+            not apply_time_slice
+            or render_options is None
+            or render_options.time_value is None
+            or ChartFactory._should_aggregate_spatial(dataset, render_options)
+        ):
             return coefficients
         time_column = ChartFactory._resolve_time_column(dataset, render_options)
-        filtered = coefficients.loc[coefficients[time_column].astype(str) == str(render_options.time_value)].copy()
+        filtered = coefficients.loc[ChartFactory._series_matches_value(coefficients[time_column], render_options.time_value)].copy()
         if filtered.empty:
             raise ValueError(f"时间点 {render_options.time_value} 没有对应数据")
         return filtered
+
+    @staticmethod
+    def _series_matches_value(series, value):
+        if isinstance(value, pd.Timestamp):
+            converted = pd.to_datetime(series, errors="coerce", format="mixed")
+            return converted == value
+        return (series == value) | (series.astype(str) == str(value))
+
+    @staticmethod
+    def _is_single_location_mode(render_options):
+        return bool(render_options is not None and render_options.temporal_mode == "single_location" and render_options.location_value is not None)
+
+    @staticmethod
+    def _should_aggregate_spatial(dataset, render_options):
+        return bool(dataset.has_temporal() and render_options is not None and render_options.spatial_mode == "aggregate_time")
+
+    @classmethod
+    def _apply_location_filter(cls, frame, dataset, render_options):
+        if not cls._is_single_location_mode(render_options):
+            return frame
+        if render_options.location_column:
+            if render_options.location_column not in frame.columns:
+                raise ValueError(f"结果文件中缺少地点字段: {render_options.location_column}")
+            mask = cls._series_matches_value(frame[render_options.location_column], render_options.location_value)
+            filtered = frame.loc[mask].copy()
+            if filtered.empty:
+                raise ValueError("所选地点没有对应数据")
+            return filtered
+        x_col, y_col = cls._resolve_coordinate_columns(dataset, render_options)
+        x_value, y_value = render_options.location_value
+        mask = cls._series_matches_value(frame[x_col], x_value) & cls._series_matches_value(frame[y_col], y_value)
+        filtered = frame.loc[mask].copy()
+        if filtered.empty:
+            raise ValueError("所选地点没有对应数据")
+        return filtered
+
+    @staticmethod
+    def _aggregate_spatial_frame(frame, x_col, y_col, value_columns):
+        aggregated = frame[[x_col, y_col] + value_columns].copy()
+        aggregated[x_col] = pd.to_numeric(aggregated[x_col], errors="coerce")
+        aggregated[y_col] = pd.to_numeric(aggregated[y_col], errors="coerce")
+        for column in value_columns:
+            aggregated[column] = pd.to_numeric(aggregated[column], errors="coerce")
+        aggregated = aggregated.dropna(subset=[x_col, y_col] + value_columns)
+        if aggregated.empty:
+            return aggregated
+        return aggregated.groupby([x_col, y_col], as_index=False)[value_columns].mean()
+
+    @staticmethod
+    def _location_label(dataset, render_options):
+        if render_options is None or render_options.location_value is None:
+            return "地点"
+        if render_options.location_column:
+            return f"{render_options.location_column}={VisualizationData.format_display_value(render_options.location_value)}"
+        x_col = render_options.longitude_column or (dataset.coord_columns[0] if len(dataset.coord_columns) >= 1 else "X")
+        y_col = render_options.latitude_column or (dataset.coord_columns[1] if len(dataset.coord_columns) >= 2 else "Y")
+        x_value, y_value = render_options.location_value
+        return VisualizationData.format_location_label(x_value, y_value, x_col, y_col)
 
     @staticmethod
     def _draw_raster_background(axes, raster_path, projection, rasterio, raster_show, CRS):

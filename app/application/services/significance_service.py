@@ -29,5 +29,12 @@ class SignificanceAnalysisService:
         hint = f"当前图表：{spec.label if spec else chart_key}，统计量：{dataset.metric_display_name(t_column)}，阈值：|t| >= {options.threshold:.4f}"
         if spec and spec.requires_beta and options.beta_column:
             hint += f"，系数字段：{dataset.metric_display_name(options.beta_column)}"
+        if getattr(options, "spatial_mode", None) == "aggregate_time":
+            hint += "，空间展示：汇总全部时间"
+        if getattr(options, "temporal_mode", None) == "single_location" and getattr(options, "location_value", None) is not None:
+            x_col = options.longitude_column or (dataset.coord_columns[0] if len(dataset.coord_columns) >= 1 else "X")
+            y_col = options.latitude_column or (dataset.coord_columns[1] if len(dataset.coord_columns) >= 2 else "Y")
+            x_value, y_value = options.location_value
+            hint += f"，时间展示：{dataset.format_location_label(x_value, y_value, x_col, y_col)}"
         return hint
 

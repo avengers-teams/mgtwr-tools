@@ -37,6 +37,18 @@ class SignificanceAnalysisPage(QWidget):
         ("2.576", "99%"),
         ("custom", "自定义"),
     ]
+    COORDINATE_TYPE_OPTIONS = [
+        ("geographic", "经纬度 (经度 / 纬度)"),
+        ("projected", "平面坐标 (X / Y)"),
+    ]
+    SPATIAL_DISPLAY_OPTIONS = [
+        ("time_slice", "按时间切片"),
+        ("aggregate_time", "汇总全部时间"),
+    ]
+    TEMPORAL_DISPLAY_OPTIONS = [
+        ("aggregate_space", "全部地点汇总"),
+        ("single_location", "单个地点"),
+    ]
 
     def __init__(self, console_output, presenter):
         super().__init__()
@@ -45,6 +57,7 @@ class SignificanceAnalysisPage(QWidget):
         self.viewmodel: SignificancePageViewModel | None = None
         self.canvas = None
         self.metric_cards = {}
+        self.location_options = []
         self.init_ui()
 
     def init_ui(self):
@@ -137,37 +150,65 @@ class SignificanceAnalysisPage(QWidget):
         self.title_input.textChanged.connect(self.render_current_chart)
         control_layout.addWidget(self.title_input, 2, 3)
 
-        control_layout.addWidget(QLabel("经度列"), 3, 0)
+        control_layout.addWidget(QLabel("坐标类型"), 3, 0)
+        self.coordinate_type_combo = ModernComboBox()
+        for value, label in self.COORDINATE_TYPE_OPTIONS:
+            self.coordinate_type_combo.addItem(label, userData=value)
+        self.coordinate_type_combo.currentIndexChanged.connect(self.on_coordinate_type_changed)
+        control_layout.addWidget(self.coordinate_type_combo, 3, 1)
+
+        self.longitude_label = QLabel("经度列")
+        control_layout.addWidget(self.longitude_label, 3, 2)
         self.longitude_combo = ModernComboBox()
-        self.longitude_combo.currentIndexChanged.connect(self.render_current_chart)
-        control_layout.addWidget(self.longitude_combo, 3, 1)
+        self.longitude_combo.currentIndexChanged.connect(self.on_coordinate_selection_changed)
+        control_layout.addWidget(self.longitude_combo, 3, 3)
 
-        control_layout.addWidget(QLabel("纬度列"), 3, 2)
+        self.latitude_label = QLabel("纬度列")
+        control_layout.addWidget(self.latitude_label, 4, 0)
         self.latitude_combo = ModernComboBox()
-        self.latitude_combo.currentIndexChanged.connect(self.render_current_chart)
-        control_layout.addWidget(self.latitude_combo, 3, 3)
+        self.latitude_combo.currentIndexChanged.connect(self.on_coordinate_selection_changed)
+        control_layout.addWidget(self.latitude_combo, 4, 1)
 
-        control_layout.addWidget(QLabel("时间列"), 4, 0)
+        control_layout.addWidget(QLabel("时间列"), 4, 2)
         self.time_column_combo = ModernComboBox()
         self.time_column_combo.currentIndexChanged.connect(self.on_time_column_changed)
-        control_layout.addWidget(self.time_column_combo, 4, 1)
+        control_layout.addWidget(self.time_column_combo, 4, 3)
 
-        control_layout.addWidget(QLabel("时间点"), 4, 2)
+        control_layout.addWidget(QLabel("时间点"), 5, 0)
         self.time_value_combo = ModernComboBox()
         self.time_value_combo.currentIndexChanged.connect(self.render_current_chart)
-        control_layout.addWidget(self.time_value_combo, 4, 3)
+        control_layout.addWidget(self.time_value_combo, 5, 1)
 
-        control_layout.addWidget(QLabel("小数位"), 5, 0)
+        control_layout.addWidget(QLabel("小数位"), 5, 2)
         self.decimal_spin = SpinBox()
         self.decimal_spin.setRange(0, 6)
         self.decimal_spin.setValue(4)
         self.decimal_spin.valueChanged.connect(self.render_current_chart)
-        control_layout.addWidget(self.decimal_spin, 5, 1)
+        control_layout.addWidget(self.decimal_spin, 5, 3)
+
+        control_layout.addWidget(QLabel("空间展示"), 6, 0)
+        self.spatial_mode_combo = ModernComboBox()
+        for value, label in self.SPATIAL_DISPLAY_OPTIONS:
+            self.spatial_mode_combo.addItem(label, userData=value)
+        self.spatial_mode_combo.currentIndexChanged.connect(self.on_display_mode_changed)
+        control_layout.addWidget(self.spatial_mode_combo, 6, 1)
+
+        control_layout.addWidget(QLabel("时间展示"), 6, 2)
+        self.temporal_mode_combo = ModernComboBox()
+        for value, label in self.TEMPORAL_DISPLAY_OPTIONS:
+            self.temporal_mode_combo.addItem(label, userData=value)
+        self.temporal_mode_combo.currentIndexChanged.connect(self.on_display_mode_changed)
+        control_layout.addWidget(self.temporal_mode_combo, 6, 3)
+
+        control_layout.addWidget(QLabel("地点"), 7, 0)
+        self.location_combo = ModernComboBox()
+        self.location_combo.currentIndexChanged.connect(self.render_current_chart)
+        control_layout.addWidget(self.location_combo, 7, 1, 1, 3)
 
         self.chart_hint_label = BodyLabel("请先加载包含 t_ 列的结果文件。")
         self.chart_hint_label.setWordWrap(True)
         self.chart_hint_label.setStyleSheet("color: #5b6b84;")
-        control_layout.addWidget(self.chart_hint_label, 6, 0, 1, 4)
+        control_layout.addWidget(self.chart_hint_label, 8, 0, 1, 4)
         layout.addWidget(control_panel)
 
         chart_panel = FrostedPanel()
@@ -204,16 +245,23 @@ class SignificanceAnalysisPage(QWidget):
     def populate_controls(self):
         if self.viewmodel is None:
             return
+        self.chart_combo.blockSignals(True)
         self.chart_combo.clear()
         for spec in self.viewmodel.chart_specs:
             self.chart_combo.addItem(spec.label, userData=spec)
+        self.chart_combo.blockSignals(False)
+        self.t_combo.blockSignals(True)
         self.t_combo.clear()
         for column in self.viewmodel.dataset.t_columns:
             self.t_combo.addItem(self.viewmodel.dataset.metric_display_name(column), userData=column)
+        self.t_combo.blockSignals(False)
+        self.beta_combo.blockSignals(True)
         self.beta_combo.clear()
         for column in self.viewmodel.dataset.beta_columns:
             self.beta_combo.addItem(self.viewmodel.dataset.metric_display_name(column), userData=column)
+        self.beta_combo.blockSignals(False)
         self.populate_coordinate_combos()
+        self.populate_location_combo()
         self.populate_time_combos()
         if self.viewmodel.chart_specs:
             self.chart_combo.setCurrentIndex(0)
@@ -226,9 +274,15 @@ class SignificanceAnalysisPage(QWidget):
         self.update_control_state()
 
     def populate_coordinate_combos(self):
+        self.longitude_combo.blockSignals(True)
+        self.latitude_combo.blockSignals(True)
+        self.coordinate_type_combo.blockSignals(True)
         self.longitude_combo.clear()
         self.latitude_combo.clear()
         if self.viewmodel is None:
+            self.coordinate_type_combo.blockSignals(False)
+            self.longitude_combo.blockSignals(False)
+            self.latitude_combo.blockSignals(False)
             return
         for column in self.viewmodel.coordinate_columns:
             self.longitude_combo.addItem(str(column), userData=column)
@@ -241,10 +295,60 @@ class SignificanceAnalysisPage(QWidget):
                 self.longitude_combo.setCurrentIndex(lon_index)
             if lat_index >= 0:
                 self.latitude_combo.setCurrentIndex(lat_index)
+        self.apply_coordinate_type_default(defaults)
+        self.coordinate_type_combo.blockSignals(False)
+        self.longitude_combo.blockSignals(False)
+        self.latitude_combo.blockSignals(False)
+
+    def apply_coordinate_type_default(self, defaults):
+        inferred = self.infer_coordinate_type(defaults)
+        index = self.coordinate_type_combo.findData(inferred)
+        if index >= 0:
+            self.coordinate_type_combo.setCurrentIndex(index)
+        self.update_coordinate_labels()
+
+    @staticmethod
+    def infer_coordinate_type(columns):
+        joined = " ".join(str(column).lower() for column in columns if column)
+        geographic_keywords = ["经度", "纬度", "lon", "lng", "lat", "long"]
+        if any(keyword in joined for keyword in geographic_keywords):
+            return "geographic"
+        return "projected"
+
+    def on_coordinate_type_changed(self):
+        self.update_coordinate_labels()
+        self.populate_location_combo()
+        self.render_current_chart()
+
+    def update_coordinate_labels(self):
+        coordinate_type = self.coordinate_type_combo.currentData()
+        if coordinate_type == "projected":
+            self.longitude_label.setText("X 坐标列")
+            self.latitude_label.setText("Y 坐标列")
+        else:
+            self.longitude_label.setText("经度列")
+            self.latitude_label.setText("纬度列")
+
+    def populate_location_combo(self):
+        self.location_combo.blockSignals(True)
+        self.location_combo.clear()
+        self.location_combo.addItem("请选择地点", userData=None)
+        if self.viewmodel is None:
+            self.location_combo.blockSignals(False)
+            return
+        x_col = self.longitude_combo.currentData()
+        y_col = self.latitude_combo.currentData()
+        self.location_options = self.viewmodel.dataset.location_value_options(x_col, y_col)
+        for label, value in self.location_options:
+            self.location_combo.addItem(label, userData=value)
+        self.location_combo.setCurrentIndex(0)
+        self.location_combo.blockSignals(False)
 
     def populate_time_combos(self):
+        self.time_column_combo.blockSignals(True)
         self.time_column_combo.clear()
         if self.viewmodel is None:
+            self.time_column_combo.blockSignals(False)
             return
         for column in self.viewmodel.time_columns:
             self.time_column_combo.addItem(str(column), userData=column)
@@ -254,22 +358,31 @@ class SignificanceAnalysisPage(QWidget):
                 self.time_column_combo.setCurrentIndex(time_index)
         elif self.viewmodel.time_columns:
             self.time_column_combo.setCurrentIndex(0)
+        self.time_column_combo.blockSignals(False)
         self.refresh_time_value_options()
 
     def refresh_time_value_options(self):
+        self.time_value_combo.blockSignals(True)
         self.time_value_combo.clear()
         if self.viewmodel is None:
+            self.time_value_combo.blockSignals(False)
             return
         time_column = self.time_column_combo.currentData()
         if not time_column:
+            self.time_value_combo.blockSignals(False)
             return
         self.time_value_combo.addItem("全部时间", userData=None)
         for label, value in self.viewmodel.dataset.time_value_options(time_column):
             self.time_value_combo.addItem(label, userData=value)
         self.time_value_combo.setCurrentIndex(0)
+        self.time_value_combo.blockSignals(False)
 
     def on_time_column_changed(self):
         self.refresh_time_value_options()
+        self.render_current_chart()
+
+    def on_coordinate_selection_changed(self):
+        self.populate_location_combo()
         self.render_current_chart()
 
     def on_t_column_changed(self):
@@ -292,6 +405,10 @@ class SignificanceAnalysisPage(QWidget):
         self.update_control_state()
         self.render_current_chart()
 
+    def on_display_mode_changed(self):
+        self.update_control_state()
+        self.render_current_chart()
+
     def current_chart_spec(self):
         index = self.chart_combo.currentIndex()
         if index < 0:
@@ -311,6 +428,11 @@ class SignificanceAnalysisPage(QWidget):
         return self.beta_combo.itemData(index)
 
     def current_render_options(self):
+        spec = self.current_chart_spec()
+        key = spec.key if spec else ""
+        spatial_mode = self.spatial_mode_combo.currentData() if key in {"spatial", "coefficient_spatial"} else "time_slice"
+        temporal_mode = self.temporal_mode_combo.currentData() if key in {"temporal", "coefficient_temporal"} else "aggregate_space"
+        location_value = self.location_combo.currentData() if temporal_mode == "single_location" else None
         return SignificanceRenderOptions(
             threshold=self.parse_float_input(self.threshold_input, 1.96),
             beta_column=self.current_beta_column(),
@@ -318,6 +440,9 @@ class SignificanceAnalysisPage(QWidget):
             latitude_column=self.latitude_combo.currentData(),
             time_column=self.time_column_combo.currentData(),
             time_value=self.time_value_combo.currentData(),
+            spatial_mode=spatial_mode or "time_slice",
+            temporal_mode=temporal_mode or "aggregate_space",
+            location_value=location_value,
             figure_title=self.title_input.text().strip() or None,
             decimal_places=self.decimal_spin.value(),
         )
@@ -339,10 +464,15 @@ class SignificanceAnalysisPage(QWidget):
         uses_temporal = key in {"temporal", "coefficient_temporal"}
         uses_beta = key in {"coefficient_spatial", "coefficient_temporal"}
         uses_time_slice = key in {"summary", "spatial", "coefficient_spatial"}
+        uses_temporal_dataset = bool(self.viewmodel is not None and self.viewmodel.dataset.has_temporal())
+        self.coordinate_type_combo.setEnabled(uses_spatial)
         self.longitude_combo.setEnabled(uses_spatial)
         self.latitude_combo.setEnabled(uses_spatial)
         self.time_column_combo.setEnabled(uses_temporal or uses_time_slice)
-        self.time_value_combo.setEnabled(uses_time_slice and self.time_column_combo.count() > 0)
+        self.time_value_combo.setEnabled(uses_time_slice and self.time_column_combo.count() > 0 and self.spatial_mode_combo.currentData() != "aggregate_time")
+        self.spatial_mode_combo.setEnabled(uses_spatial and uses_temporal_dataset)
+        self.temporal_mode_combo.setEnabled(uses_temporal and uses_temporal_dataset)
+        self.location_combo.setEnabled(uses_temporal and self.temporal_mode_combo.currentData() == "single_location")
         self.beta_combo.setEnabled(uses_beta)
 
     def render_current_chart(self):
