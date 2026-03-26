@@ -20,7 +20,7 @@ class AdditionalWindows(QWidget):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(16)
 
-        layout.addWidget(PageHeader("其他功能", "补充型工具页，放与建模主链路解耦的独立工具。"))
+        layout.addWidget(PageHeader("其他功能"))
 
         grid = QGridLayout()
         grid.setHorizontalSpacing(14)
@@ -32,7 +32,6 @@ class AdditionalWindows(QWidget):
                 "用于快速检查自变量共线性。",
                 "打开 VIF 工具",
                 self.open_vif_window,
-                accent="rgba(37, 99, 235, 0.08)",
             ),
             0,
             0,
@@ -43,7 +42,6 @@ class AdditionalWindows(QWidget):
                 "将模型结果中的 coefficients 工作表按经纬度导出为点要素 shp 文件。",
                 "打开导出工具",
                 self.open_shp_window,
-                accent="rgba(5, 150, 105, 0.08)",
             ),
             0,
             1,
@@ -54,7 +52,6 @@ class AdditionalWindows(QWidget):
                 "支持 Z-Score、Min-Max、Robust、MaxAbs 等多种常用标准化方法。",
                 "打开标准化工具",
                 self.open_standardization_window,
-                accent="rgba(217, 119, 6, 0.08)",
             ),
             1,
             0,
@@ -66,8 +63,8 @@ class AdditionalWindows(QWidget):
         layout.addStretch(1)
 
     @staticmethod
-    def build_tool_panel(title, description, button_text, callback, accent):
-        panel = ActionPanel(title, description, accent=accent)
+    def build_tool_panel(title, description, button_text, callback):
+        panel = ActionPanel(title, description)
         button = ModernButton(button_text)
         button.clicked.connect(callback)
         panel.body_layout.addWidget(button)
@@ -108,4 +105,3 @@ class AdditionalWindows(QWidget):
         if self.standardization_window is None or not self.standardization_window.isVisible():
             self.standardization_window = DataStandardizationWindow()
         self._show_window(self.standardization_window)
-
