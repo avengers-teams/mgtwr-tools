@@ -3,67 +3,90 @@ name: Build and Release with Nuitka
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
     inputs:
       version_tag:
-        description: '手动填写的版本号 (例如: v1.0.2)'
+        description: "手动填写的版本号 (例如: v1.0.2)"
         required: true
-        default: 'v1.0.2-test'
+        default: "v1.0.2-test"
+
+permissions:
+  contents: write
+
+env:
+  APP_EXE_NAME: main.exe
+  PRODUCT_NAME: 多功能数据分析处理工具
+  COMPANY_NAME: Yserver
+  FILE_VERSION: 1.0.0.0
+  PRODUCT_VERSION: 1.0.0.0
 
 jobs:
   build:
     runs-on: windows-latest
+    outputs:
+      version_tag: ${{ steps.meta.outputs.version_tag }}
 
     steps:
-      # 检出代码库
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 设置 Python 3.11 环境
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
-          architecture: 'x64'
+          python-version: "3.11"
+          architecture: "x64"
 
-      # 安装 Nuitka 和相关依赖
+      - name: Resolve version tag
+        id: meta
+        shell: pwsh
+        run: |
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $tag = "${{ github.event.inputs.version_tag }}"
+          } else {
+            $tag = "${{ github.ref_name }}"
+          }
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            throw "未解析到版本号"
+          }
+          "version_tag=$tag" >> $env:GITHUB_OUTPUT
+
       - name: Install dependencies
+        shell: pwsh
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      # 使用 Nuitka 编译
+
       - name: Build with Nuitka
         uses: Nuitka/Nuitka-Action@main
         with:
-          # nuitka-version: main
-          script-name: main.py  # 修改为你的主脚本文件名
-          onefile: true
+          nuitka-version: 2.4.8
+          script-name: main.py
+          mode: onefile
           mingw64: true
-          show-progress: true
           show-memory: true
           output-dir: out
           enable-plugins: pyqt5
           windows-console-mode: disable
-          windows-product-name: "多功能数据分析处理工具"
-          windows-company-name: "Yserver"
-          windows-product-version: 1.0.0.0
-          windows-file-version: 1.0.0.0
+          product-name: ${{ env.PRODUCT_NAME }}
+          company-name: ${{ env.COMPANY_NAME }}
+          product-version: ${{ env.PRODUCT_VERSION }}
+          file-version: ${{ env.FILE_VERSION }}
+          file-description: ${{ env.PRODUCT_NAME }}
           windows-icon-from-ico: favicon.ico
           include-data-dir: ./template=template
           include-data-files: |
             ./emoji.jpg=emoji.jpg
             ./favicon.ico=favicon.ico
-          include-qt-plugins: all  # 包含所有 PyQt5 插件
-          noinclude-qt-plugins: ""
-          assume-yes-for-downloads: true  # 自动下载 GCC
+          include-qt-plugins: all
+          assume-yes-for-downloads: true
 
-      # 上传构建产物
-      - name: Upload Artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: exe
-          path: out/main.exe  # 调整为实际生成的文件路径和名称
+          path: out/${{ env.APP_EXE_NAME }}
+          if-no-files-found: error
           include-hidden-files: true
 
   release:
@@ -71,32 +94,17 @@ jobs:
     needs: build
 
     steps:
-      # 下载构建产物
       - name: Download build artifact
         uses: actions/download-artifact@v4
         with:
           name: exe
-          path: out/
+          path: out
 
-      # 创建 GitHub Release
       - name: Create GitHub Release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          release_name: Release ${{ github.ref_name }}
+          tag_name: ${{ needs.build.outputs.version_tag }}
+          name: Release ${{ needs.build.outputs.version_tag }}
+          files: out/${{ env.APP_EXE_NAME }}
           draft: false
           prerelease: false
-
-      # 上传 Release 产物
-      - name: Upload Release Asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: out/main.exe  # 根据实际生成的文件名调整
-          asset_name: my_program.exe
-          asset_content_type: application/octet-stream
