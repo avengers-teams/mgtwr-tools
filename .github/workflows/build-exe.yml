@@ -73,11 +73,8 @@ jobs:
           product-version: ${{ env.PRODUCT_VERSION }}
           file-version: ${{ env.FILE_VERSION }}
           file-description: ${{ env.PRODUCT_NAME }}
-          windows-icon-from-ico: favicon.ico
-          include-data-dir: ./template=template
-          include-data-files: |
-            ./emoji.jpg=emoji.jpg
-            ./favicon.ico=favicon.ico
+          windows-icon-from-ico: assets/icons/favicon.ico
+          include-data-dir: ./assets=assets
           include-qt-plugins: all
           assume-yes-for-downloads: true
 
