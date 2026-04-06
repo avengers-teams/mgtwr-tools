@@ -252,7 +252,7 @@ def overlay_vector_boundaries(ax: plt.Axes, boundary_gdf, inner_boundary_gdf) ->
         inner_boundary_gdf.boundary.plot(ax=ax, color="black", linewidth=0.35, alpha=0.9, zorder=6)
 
 
-def overlay_label_points(ax: plt.Axes, label_points: Optional[pd.DataFrame]) -> None:
+def overlay_label_points(ax: plt.Axes, label_points: Optional[pd.DataFrame], fontsize: float = 9.5) -> None:
     if label_points is None or label_points.empty:
         return
     for _, row in label_points.iterrows():
@@ -260,7 +260,7 @@ def overlay_label_points(ax: plt.Axes, label_points: Optional[pd.DataFrame]) -> 
             float(row["longitude"]),
             float(row["latitude"]),
             str(row["name"]),
-            fontsize=9.5,
+            fontsize=fontsize,
             ha="center",
             va="center",
             color="#2d2418",
@@ -400,6 +400,8 @@ def draw_metric_map_core(
     label_points: Optional[pd.DataFrame],
     panel_title: str,
     add_compass: bool = True,
+    show_north_arrow: bool = True,
+    label_fontsize: float = 9.0,
 ):
     longitudes, latitudes, lon_edges, lat_edges, grid = infer_grid(frame, metric)
     ax.set_title(panel_title, pad=8, fontsize=11)
@@ -424,9 +426,10 @@ def draw_metric_map_core(
 
     maybe_outline_valid_mask(ax, longitudes, latitudes, grid)
     overlay_vector_boundaries(ax, boundary_gdf, inner_boundary_gdf)
-    overlay_label_points(ax, label_points=label_points)
+    overlay_label_points(ax, label_points=label_points, fontsize=label_fontsize)
     configure_map_axes(ax, extent)
-    add_north_arrow(ax)
+    if show_north_arrow:
+        add_north_arrow(ax)
     return mesh
 
 
@@ -511,12 +514,15 @@ def create_metric_comparison_figure(
     configure_style()
     extent = compute_catalog_extent(catalog)
     n_windows = len(catalog)
-    ncols = 2 if n_windows <= 4 else 3
+    ncols = 1 if n_windows <= 3 else 2
     nrows = ceil(n_windows / ncols)
-    fig, axes = plt.subplots(nrows, ncols, figsize=(6.8 * ncols, 5.8 * nrows), constrained_layout=True)
+    fig_width = 8.4 if ncols == 1 else 16.2
+    fig_height = max(7.0, 6.6 * nrows + 0.6)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(fig_width, fig_height), constrained_layout=True)
     axes_array = np.atleast_1d(axes).ravel()
 
     norm = build_norm(metric, [row["metrics_df"] for _, row in catalog.iterrows()]) if metric_kind(metric) == "continuous" else None
+    comparison_label_points = label_points if n_windows <= 4 else None
     last_mesh = None
     for axis in axes_array[n_windows:]:
         axis.set_visible(False)
@@ -526,7 +532,7 @@ def create_metric_comparison_figure(
         start = row.get("window_start")
         end = row.get("window_end")
         if pd.notna(start) and pd.notna(end):
-            title = f"{start:%Y-%m-%d}\n{end:%Y-%m-%d}"
+            title = f"{start:%Y-%m}\n{end:%Y-%m}"
         last_mesh = draw_metric_map_core(
             ax=axes_array[index],
             frame=row["metrics_df"],
@@ -535,23 +541,25 @@ def create_metric_comparison_figure(
             extent=extent,
             boundary_gdf=boundary_gdf,
             inner_boundary_gdf=inner_boundary_gdf,
-            label_points=label_points,
+            label_points=comparison_label_points,
             panel_title=title,
-            add_compass=metric_kind(metric) == "direction",
+            add_compass=metric_kind(metric) == "direction" and index == 0,
+            show_north_arrow=index == 0,
+            label_fontsize=8.2,
         )
 
     if metric_kind(metric) == "direction":
         cmap, direction_norm = get_direction_style()
         sm = plt.cm.ScalarMappable(cmap=cmap, norm=direction_norm)
         sm.set_array([])
-        cbar = fig.colorbar(sm, ax=axes_array[:n_windows].tolist(), shrink=0.82, pad=0.02, ticks=np.arange(len(DIRECTION_LABELS)))
+        cbar = fig.colorbar(sm, ax=axes_array[:n_windows].tolist(), shrink=0.92, pad=0.015, ticks=np.arange(len(DIRECTION_LABELS)))
         cbar.ax.set_yticklabels(DIRECTION_LABELS)
         cbar.set_label(metric_label(metric))
     elif last_mesh is not None:
-        cbar = fig.colorbar(last_mesh, ax=axes_array[:n_windows].tolist(), shrink=0.82, pad=0.02)
+        cbar = fig.colorbar(last_mesh, ax=axes_array[:n_windows].tolist(), shrink=0.92, pad=0.015)
         cbar.set_label(metric_label(metric))
 
-    fig.suptitle(f"{metric_label(metric)} Comparison Across Windows", fontsize=17, fontweight="semibold")
+    fig.suptitle(f"{metric_label(metric)} 多窗口比较", fontsize=18, fontweight="semibold")
     return fig
 
 

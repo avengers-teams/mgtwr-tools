@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 import pandas as pd
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -10,6 +11,8 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
+    QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -42,6 +45,10 @@ class NetworkMetricsDisplayPage(QWidget):
         self.label_points = None
         self.label_layer_map = {}
         self.canvas = None
+        self.canvas_toolbar = None
+        self.base_canvas_size = None
+        self.canvas_scale = 1.0
+        self.zoom_label = None
         self.init_ui()
 
     def init_ui(self):
@@ -185,15 +192,30 @@ class NetworkMetricsDisplayPage(QWidget):
         chart_layout.setContentsMargins(18, 18, 18, 18)
         chart_layout.setSpacing(10)
         chart_layout.addWidget(SubtitleLabel("图形预览"))
+        preview_hint = BodyLabel("预览默认适应窗口显示整图，可继续放大、缩小或平移查看细节。")
+        preview_hint.setStyleSheet("color: #5b6b84;")
+        preview_hint.setWordWrap(True)
+        chart_layout.addWidget(preview_hint)
+
+        self.toolbar_container = QWidget()
+        self.toolbar_layout = QHBoxLayout(self.toolbar_container)
+        self.toolbar_layout.setContentsMargins(0, 0, 0, 0)
+        self.toolbar_layout.setSpacing(0)
+        chart_layout.addWidget(self.toolbar_container)
+
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(False)
+        self.scroll_area.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        self.scroll_area.setMinimumHeight(560)
+
         self.canvas_container = QWidget()
+        self.canvas_container.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.canvas_container_layout = QVBoxLayout(self.canvas_container)
         self.canvas_container_layout.setContentsMargins(0, 0, 0, 0)
-        placeholder = QLabel("加载网络指标后将在此处显示地图")
-        placeholder.setAlignment(Qt.AlignCenter)
-        placeholder.setMinimumHeight(480)
-        placeholder.setStyleSheet("color: #6b7280;")
-        self.canvas_container_layout.addWidget(placeholder)
-        chart_layout.addWidget(self.canvas_container)
+        self.canvas_container_layout.setSpacing(0)
+        self.scroll_area.setWidget(self.canvas_container)
+        self.show_preview_placeholder("加载网络指标后将在此处显示地图")
+        chart_layout.addWidget(self.scroll_area, 1)
         layout.addWidget(chart_panel, 1)
         self.update_view_mode_state()
 
@@ -372,20 +394,110 @@ class NetworkMetricsDisplayPage(QWidget):
         except Exception as exc:
             self.info_label.setText(f"图形渲染失败：{exc}")
             self.console_output.append(f"网络图渲染失败: {exc}")
+            self.show_preview_placeholder("图形渲染失败，请检查输入数据和参数。")
             return
 
         self.info_label.setText(info_text)
         self.replace_canvas(FigureCanvas(figure))
 
-    def replace_canvas(self, canvas):
-        while self.canvas_container_layout.count():
-            item = self.canvas_container_layout.takeAt(0)
+    def clear_layout_widgets(self, layout):
+        while layout.count():
+            item = layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
+
+    def show_preview_placeholder(self, text: str):
+        self.clear_layout_widgets(self.toolbar_layout)
+        self.clear_layout_widgets(self.canvas_container_layout)
+        placeholder = QLabel(text)
+        placeholder.setAlignment(Qt.AlignCenter)
+        placeholder.setFixedSize(960, 520)
+        placeholder.setStyleSheet("color: #6b7280;")
+        self.canvas_container.setFixedSize(960, 520)
+        self.canvas_container_layout.addWidget(placeholder)
+        self.canvas_container.adjustSize()
+        self.scroll_area.ensureVisible(0, 0)
+        self.canvas = None
+        self.canvas_toolbar = None
+        self.base_canvas_size = None
+        self.canvas_scale = 1.0
+        self.zoom_label = None
+
+    def update_zoom_label(self):
+        if self.zoom_label is not None:
+            self.zoom_label.setText(f"{int(round(self.canvas_scale * 100))}%")
+
+    def apply_canvas_scale(self, scale: float):
+        if self.canvas is None or self.base_canvas_size is None:
+            return
+        base_width, base_height = self.base_canvas_size
+        self.canvas_scale = max(0.2, min(3.0, float(scale)))
+        scaled_width = max(480, int(round(base_width * self.canvas_scale)))
+        scaled_height = max(320, int(round(base_height * self.canvas_scale)))
+        self.canvas.setFixedSize(scaled_width, scaled_height)
+        self.canvas_container.setFixedSize(scaled_width, scaled_height)
+        self.canvas.resize(scaled_width, scaled_height)
+        self.canvas.draw_idle()
+        self.canvas_container.adjustSize()
+        self.update_zoom_label()
+
+    def fit_canvas_to_view(self):
+        if self.canvas is None or self.base_canvas_size is None:
+            return
+        base_width, base_height = self.base_canvas_size
+        viewport = self.scroll_area.viewport().size()
+        available_width = max(420, viewport.width() - 24)
+        available_height = max(320, viewport.height() - 24)
+        scale = min(available_width / max(base_width, 1), available_height / max(base_height, 1), 1.0)
+        self.apply_canvas_scale(scale)
+        self.scroll_area.ensureVisible(0, 0)
+
+    def zoom_in_canvas(self):
+        self.apply_canvas_scale(self.canvas_scale * 1.15)
+
+    def zoom_out_canvas(self):
+        self.apply_canvas_scale(self.canvas_scale / 1.15)
+
+    def reset_canvas_zoom(self):
+        self.apply_canvas_scale(1.0)
+
+    def replace_canvas(self, canvas):
+        self.clear_layout_widgets(self.toolbar_layout)
+        self.clear_layout_widgets(self.canvas_container_layout)
         self.canvas = canvas
-        self.canvas.setMinimumHeight(500)
-        self.canvas_container_layout.addWidget(self.canvas)
+        self.canvas.draw()
+
+        width_px = max(1080, int(round(self.canvas.figure.get_figwidth() * self.canvas.figure.dpi)))
+        height_px = max(620, int(round(self.canvas.figure.get_figheight() * self.canvas.figure.dpi)))
+        self.base_canvas_size = (width_px, height_px)
+        self.canvas_scale = 1.0
+        self.canvas.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.canvas.setFixedSize(width_px, height_px)
+
+        self.canvas_toolbar = NavigationToolbar(self.canvas, self)
+        self.toolbar_layout.addWidget(self.canvas_toolbar)
+        zoom_out_button = ModernButton("缩小")
+        zoom_out_button.clicked.connect(self.zoom_out_canvas)
+        self.toolbar_layout.addWidget(zoom_out_button)
+        zoom_in_button = ModernButton("放大")
+        zoom_in_button.clicked.connect(self.zoom_in_canvas)
+        self.toolbar_layout.addWidget(zoom_in_button)
+        fit_button = ModernButton("适应窗口")
+        fit_button.clicked.connect(self.fit_canvas_to_view)
+        self.toolbar_layout.addWidget(fit_button)
+        reset_button = ModernButton("100%")
+        reset_button.clicked.connect(self.reset_canvas_zoom)
+        self.toolbar_layout.addWidget(reset_button)
+        self.zoom_label = BodyLabel("100%")
+        self.zoom_label.setStyleSheet("color: #5b6b84; padding: 0 6px;")
+        self.toolbar_layout.addWidget(self.zoom_label)
+        self.toolbar_layout.addStretch(1)
+        self.canvas_container.setFixedSize(width_px, height_px)
+        self.canvas_container_layout.addWidget(self.canvas, 0, Qt.AlignHCenter | Qt.AlignTop)
+        self.canvas_container.adjustSize()
+        self.update_zoom_label()
+        QTimer.singleShot(0, self.fit_canvas_to_view)
 
     def export_current_figure(self):
         if self.canvas is None:
