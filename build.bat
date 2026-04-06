@@ -53,7 +53,7 @@ if exist "main.build" rmdir /s /q "main.build"
 if exist "main.dist" rmdir /s /q "main.dist"
 if exist "main.onefile-build" rmdir /s /q "main.onefile-build"
 
-"%PYTHON%" -m nuitka --onefile --mingw64 --show-memory --enable-plugin=pyqt5 --windows-console-mode=disable --python-flag=no_docstrings --output-dir=%OUT_DIR% --output-filename=%APP_NAME% --product-name="多功能数据分析处理工具" --company-name="Yserver" --product-version=%APP_VERSION% --file-version=%APP_VERSION% --file-description="多功能数据分析处理工具" --windows-icon-from-ico=assets/icons/favicon.ico --include-data-dir=assets=assets --include-data-files=version=version --include-qt-plugins=sensible,styles,imageformats --nofollow-import-to=pytest,unittest,IPython,jupyter,notebook --assume-yes-for-downloads main.py
+"%PYTHON%" -m nuitka --onefile --mingw64 --show-memory --enable-plugin=pyqt5 --windows-console-mode=attach --python-flag=no_docstrings --output-dir=%OUT_DIR% --output-filename=%APP_NAME% --product-name="多功能数据分析处理工具" --company-name="Yserver" --product-version=%APP_VERSION% --file-version=%APP_VERSION% --file-description="多功能数据分析处理工具" --windows-icon-from-ico=assets/icons/favicon.ico --include-data-dir=assets=assets --include-data-files=version=version --include-qt-plugins=sensible,styles,imageformats --nofollow-import-to=IPython,jupyter,notebook --assume-yes-for-downloads main.py
 if errorlevel 1 goto :fail
 
 echo Build completed: %OUT_DIR%\%APP_NAME%

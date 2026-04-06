@@ -4,7 +4,7 @@ import sys
 from multiprocessing import freeze_support
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QIcon
+from PyQt5.QtGui import QFont, QIcon
 from PyQt5.QtWidgets import QApplication
 from qfluentwidgets import Theme, setTheme, setThemeColor
 
@@ -18,6 +18,7 @@ def create_application(argv: list[str] | None = None):
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(argv or sys.argv)
+    app.setFont(QFont("Microsoft YaHei UI", 10))
     setTheme(Theme.LIGHT)
     setThemeColor(APP_THEME_COLOR)
     app.setStyleSheet(load_app_stylesheet())

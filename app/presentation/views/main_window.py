@@ -11,6 +11,9 @@ from app.presentation.views.pages.app_info import AppInfoPage
 from app.presentation.views.theme import make_scrollable
 from app.presentation.views.pages.MGTWR_analysis import MGRWRAnalysisPage
 from app.presentation.views.pages.data_crawling import DirectorySelector
+from app.presentation.views.pages.network_analysis import NetworkAnalysisHomePage
+from app.presentation.views.pages.network_metrics_calculation import NetworkMetricsCalculationPage
+from app.presentation.views.pages.network_metrics_display import NetworkMetricsDisplayPage
 from app.presentation.views.pages.data_preparation import DataGenerationPage
 from app.presentation.views.pages.data_validation.index import AdditionalWindows
 from app.presentation.views.pages.data_visualization import DataVisualizationPage
@@ -48,6 +51,16 @@ class MainWindow(FluentWindow):
         self.mgrwr_page = MGRWRAnalysisPage(self.console_output, self.task_manager)
         self.data_visualization_page = DataVisualizationPage(self.console_output)
         self.significance_analysis_page = self.container.create_significance_page(self.console_output)
+        self.network_analysis_page = NetworkAnalysisHomePage(self.switch_to_route)
+        self.network_metrics_calculation_page = NetworkMetricsCalculationPage(
+            self.console_output,
+            self.task_manager,
+            self.container.network_analysis_service,
+        )
+        self.network_metrics_display_page = NetworkMetricsDisplayPage(
+            self.console_output,
+            self.container.network_analysis_service,
+        )
         self.additional_page = AdditionalWindows()
         self.app_info_page = AppInfoPage(self.update_presenter)
 
@@ -113,6 +126,21 @@ class MainWindow(FluentWindow):
         self.register_page(self.mgrwr_page, "model_analysis", "模型分析", FluentIcon.ROBOT)
         self.register_page(self.data_visualization_page, "data_visualization", "数据可视化", FluentIcon.PIE_SINGLE)
         self.register_page(self.significance_analysis_page, "significance_analysis", "显著性分析", FluentIcon.FLAG)
+        self.register_page(self.network_analysis_page, "network_analysis", "网络分析", FluentIcon.GLOBE)
+        self.register_page(
+            self.network_metrics_calculation_page,
+            "network_metrics_calculation",
+            "指标计算",
+            FluentIcon.SYNC,
+            parent="network_analysis",
+        )
+        self.register_page(
+            self.network_metrics_display_page,
+            "network_metrics_display",
+            "指标展示",
+            FluentIcon.PIE_SINGLE,
+            parent="network_analysis",
+        )
 
         self.navigationInterface.addSeparator()
 
@@ -140,11 +168,11 @@ class MainWindow(FluentWindow):
 
         self.switch_to_route("data_generation")
 
-    def register_page(self, page_widget, route_key, title, icon, position=NavigationItemPosition.TOP):
+    def register_page(self, page_widget, route_key, title, icon, position=NavigationItemPosition.TOP, parent=None):
         page = make_scrollable(page_widget, margins=(20, 20, 20, 20))
         page.setObjectName(route_key)
         self.route_widgets[route_key] = page
-        self.addSubInterface(page, icon, title, position=position, isTransparent=True)
+        self.addSubInterface(page, icon, title, position=position, parent=parent, isTransparent=True)
 
     def switch_to_route(self, route_key):
         page = self.route_widgets.get(route_key)

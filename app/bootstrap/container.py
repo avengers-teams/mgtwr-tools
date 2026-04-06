@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.application.services.result_file_service import ResultFileService
+from app.application.services.network_analysis_service import NetworkAnalysisService
 from app.application.services.significance_service import SignificanceAnalysisService
 from app.application.services.update_service import UpdateService
 from app.infrastructure.repositories.excel_result_repository import ExcelResultRepository
@@ -16,6 +17,7 @@ class AppContainer:
         self.excel_result_repository = ExcelResultRepository()
         self.github_release_repository = GitHubReleaseRepository()
         self.result_file_service = ResultFileService(self.excel_result_repository)
+        self.network_analysis_service = NetworkAnalysisService()
         self.significance_service = SignificanceAnalysisService()
         self.update_service = UpdateService(self.github_release_repository)
 

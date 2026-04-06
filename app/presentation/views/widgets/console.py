@@ -1,8 +1,12 @@
+from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtWidgets import QFileDialog, QTextEdit, QVBoxLayout, QWidget
 from qfluentwidgets import TabCloseButtonDisplayMode, TabWidget
 
 
 class TaskConsole(QTextEdit):
+    append_requested = pyqtSignal(str)
+    clear_requested = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setReadOnly(True)
@@ -18,20 +22,28 @@ class TaskConsole(QTextEdit):
             }
         """)
         self._buffer = ""
+        self.append_requested.connect(self._append_line)
+        self.clear_requested.connect(self._clear_console_impl)
 
     def write(self, message):
         self._buffer += str(message)
         while '\n' in self._buffer:
             line, self._buffer = self._buffer.split('\n', 1)
-            self.append(line)
+            self.append_requested.emit(line)
 
     def flush(self):
         if self._buffer:
-            self.append(self._buffer)
+            self.append_requested.emit(self._buffer)
             self._buffer = ""
 
     def clear_console(self):
         self._buffer = ""
+        self.clear_requested.emit()
+
+    def _append_line(self, text):
+        self.append(text)
+
+    def _clear_console_impl(self):
         self.clear()
 
 
