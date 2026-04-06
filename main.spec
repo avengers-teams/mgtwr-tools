@@ -6,13 +6,16 @@ from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, co
 rasterio_hiddenimports = collect_submodules('rasterio')
 rasterio_datas = collect_data_files('rasterio')
 rasterio_binaries = collect_dynamic_libs('rasterio')
+netcdf4_hiddenimports = collect_submodules('netCDF4')
+netcdf4_datas = collect_data_files('netCDF4')
+netcdf4_binaries = collect_dynamic_libs('netCDF4')
 
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=rasterio_binaries,
-    datas=[('assets', 'assets'), ('version', '.')] + rasterio_datas,
-    hiddenimports=rasterio_hiddenimports,
+    binaries=rasterio_binaries + netcdf4_binaries,
+    datas=[('assets', 'assets'), ('version', '.')] + rasterio_datas + netcdf4_datas,
+    hiddenimports=rasterio_hiddenimports + netcdf4_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

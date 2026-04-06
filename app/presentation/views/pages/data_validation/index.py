@@ -4,6 +4,7 @@ from app.presentation.views.widgets.button import ModernButton
 from app.presentation.views.widgets.fluent_surface import ActionPanel, PageHeader
 from app.presentation.views.pages.data_validation.coefficients_to_shp import CoefficientsToShpWindow
 from app.presentation.views.pages.data_validation.data_standardization import DataStandardizationWindow
+from app.presentation.views.pages.data_validation.nc_raster_tools import NCRasterToolsWindow
 from app.presentation.views.pages.data_validation.variance_Inflation_factor import VIFWindow
 
 
@@ -13,6 +14,7 @@ class AdditionalWindows(QWidget):
         self.vif_window = None
         self.shp_window = None
         self.standardization_window = None
+        self.nc_raster_window = None
         self.init_ui()
 
     def init_ui(self):
@@ -55,8 +57,16 @@ class AdditionalWindows(QWidget):
             ),
             1,
             0,
+        )
+        grid.addWidget(
+            self.build_tool_panel(
+                "NC 栅格处理",
+                "批量处理 nc：重采样、裁切、重投影，并支持按 time/band 等维度拆分导出 tif。",
+                "打开 NC 工具",
+                self.open_nc_raster_window,
+            ),
             1,
-            2,
+            1,
         )
 
         layout.addLayout(grid)
@@ -83,6 +93,7 @@ class AdditionalWindows(QWidget):
             self.vif_window,
             self.shp_window,
             self.standardization_window,
+            self.nc_raster_window,
         )
 
     @staticmethod
@@ -105,3 +116,8 @@ class AdditionalWindows(QWidget):
         if self.standardization_window is None or not self.standardization_window.isVisible():
             self.standardization_window = DataStandardizationWindow()
         self._show_window(self.standardization_window)
+
+    def open_nc_raster_window(self):
+        if self.nc_raster_window is None or not self.nc_raster_window.isVisible():
+            self.nc_raster_window = NCRasterToolsWindow()
+        self._show_window(self.nc_raster_window)
