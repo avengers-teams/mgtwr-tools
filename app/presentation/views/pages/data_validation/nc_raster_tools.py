@@ -3,6 +3,7 @@ from __future__ import annotations
 from PyQt5.QtGui import QCloseEvent, QIcon
 from PyQt5.QtWidgets import (
     QAbstractItemView,
+    QFrame,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -17,7 +18,14 @@ from PyQt5.QtWidgets import (
 )
 from qfluentwidgets import BodyLabel, SubtitleLabel, TitleLabel, TransparentPushButton
 
-from app.application.services.nc_raster_tools import BatchProcessResult, NCRasterBatchOptions, NCRasterToolsService
+from app.application.services.nc_raster_tools import (
+    BatchProcessResult,
+    DimensionInspection,
+    DimensionLabelConfig,
+    NCRasterBatchOptions,
+    NCRasterToolsService,
+    SpatialDimensionInspection,
+)
 from app.core.urltools import get_resource_path
 from app.infrastructure.tasks.nc_raster_processing import NCRasterBatchThread
 from app.presentation.views.widgets.button import ModernButton
@@ -36,6 +44,8 @@ class NCRasterToolsWindow(QMainWindow):
 
         self.worker_thread: NCRasterBatchThread | None = None
         self.form_widgets: list[QWidget] = []
+        self.dimension_config_widgets: dict[str, dict[str, QWidget]] = {}
+        self.metadata_sample_file: str | None = None
         self.init_ui()
 
     def init_ui(self):
@@ -69,7 +79,7 @@ class NCRasterToolsWindow(QMainWindow):
 
         self.input_path_edit = ModernLineEdit()
         self.input_path_edit.setPlaceholderText("选择单个 nc 文件，或选择包含多个 nc 的目录")
-        self.input_path_edit.editingFinished.connect(self.on_input_path_changed)
+        self.input_path_edit.editingFinished.connect(self.reload_input_metadata)
         input_file_button = ModernButton("选择 nc 文件")
         input_file_button.clicked.connect(self.select_input_file)
         input_dir_button = ModernButton("选择目录")
@@ -131,7 +141,7 @@ class NCRasterToolsWindow(QMainWindow):
         file_layout.addLayout(clip_button_row)
 
         self.recursive_check = ModernCheckBox("目录输入时深层遍历子目录")
-        self.recursive_check.clicked.connect(self.reload_split_dimensions)
+        self.recursive_check.clicked.connect(self.reload_input_metadata)
         file_layout.addWidget(self.recursive_check)
         layout.addWidget(file_group)
 
@@ -146,6 +156,20 @@ class NCRasterToolsWindow(QMainWindow):
         self.resampling_combo = ModernComboBox()
         for value, label in NCRasterToolsService.resampling_items():
             self.resampling_combo.addItem(label, userData=value)
+
+        self.source_crs_edit = ModernLineEdit()
+        self.source_crs_edit.setPlaceholderText("源 nc 缺少 CRS 时必填，例如 EPSG:4326")
+
+        self.x_dimension_combo = ModernComboBox()
+        self.x_dimension_combo.addItem("自动判断", userData=None)
+        self.x_dimension_combo.currentIndexChanged.connect(self.reload_split_dimensions)
+
+        self.y_dimension_combo = ModernComboBox()
+        self.y_dimension_combo.addItem("自动判断", userData=None)
+        self.y_dimension_combo.currentIndexChanged.connect(self.reload_split_dimensions)
+
+        self.spatial_dimension_hint = BodyLabel("空间维度：等待读取输入 nc")
+        self.spatial_dimension_hint.setWordWrap(True)
 
         self.target_crs_edit = ModernLineEdit()
         self.target_crs_edit.setPlaceholderText("例如 EPSG:4326；留空则保持原坐标系或使用参考文件")
@@ -177,6 +201,12 @@ class NCRasterToolsWindow(QMainWindow):
         format_row.addWidget(self._field_block("输出格式", self.output_format_combo), 1)
         format_row.addWidget(self._field_block("重采样方法", self.resampling_combo), 1)
         option_layout.addLayout(format_row)
+        option_layout.addWidget(self._field_block("源 CRS", self.source_crs_edit))
+        spatial_dim_row = QHBoxLayout()
+        spatial_dim_row.addWidget(self._field_block("X 维度", self.x_dimension_combo), 1)
+        spatial_dim_row.addWidget(self._field_block("Y 维度", self.y_dimension_combo), 1)
+        option_layout.addLayout(spatial_dim_row)
+        option_layout.addWidget(self.spatial_dimension_hint)
         option_layout.addWidget(self._field_block("目标投影", self.target_crs_edit))
 
         resolution_row = QHBoxLayout()
@@ -194,14 +224,24 @@ class NCRasterToolsWindow(QMainWindow):
         option_layout.addWidget(self._field_block("变量过滤", self.variables_edit))
         option_layout.addWidget(self._field_block("TIFF 拆分维度", self.tif_split_dims_list))
         option_layout.addWidget(self.tif_split_dims_hint)
+
+        self.dimension_config_group = QGroupBox("维度值格式")
+        self.dimension_config_layout = QVBoxLayout(self.dimension_config_group)
+        self.dimension_config_layout.setSpacing(10)
+        self.dimension_config_empty_hint = BodyLabel("加载输入 nc 后，可为每个维度配置普通标签/时间解析方式。")
+        self.dimension_config_empty_hint.setWordWrap(True)
+        self.dimension_config_layout.addWidget(self.dimension_config_empty_hint)
+        option_layout.addWidget(self.dimension_config_group)
         layout.addWidget(option_group)
 
         hint_group = QGroupBox("说明")
         hint_layout = QVBoxLayout(hint_group)
         hint_layout.setSpacing(6)
         for text in (
-            "参考文件优先级最高。提供 tif 或 nc 后，会按参考网格统一分辨率、范围和投影。",
-            "未提供参考文件时，可用目标投影、分辨率和裁切范围单独控制输出网格。",
+            "源 nc 缺少 CRS 时，必须手动填写“源 CRS”；目标投影仅表示输出坐标系，不会再被当作源 CRS 使用。",
+            "裁切方式三选一：参考栅格对齐、矢量裁切、范围裁切;",
+            "参考文件优先级最高。提供 tif 或 nc 后，会严格按参考网格统一分辨率、范围和投影。",
+            "未提供参考文件时，可用目标投影、分辨率和单一裁切方式控制输出网格。",
             "TIFF 拆分维度会从输入 nc 自动读取。未选择任何维度时，会按全部非空间维度完全拆分。",
             "没有被选中拆分的额外维度会写成同一个 TIFF 的多个波段，例如只选 time 不选 band，则每个时间输出一个多波段 tif。",
             "选择 shp/geojson/gpkg 后，会按矢量范围裁切，并在输出时按多边形外部做掩膜。",
@@ -251,6 +291,9 @@ class NCRasterToolsWindow(QMainWindow):
             self.recursive_check,
             self.output_format_combo,
             self.resampling_combo,
+            self.source_crs_edit,
+            self.x_dimension_combo,
+            self.y_dimension_combo,
             self.target_crs_edit,
             self.resolution_x_edit,
             self.resolution_y_edit,
@@ -265,13 +308,13 @@ class NCRasterToolsWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "选择 nc 文件", "", "NetCDF 文件 (*.nc)")
         if path:
             self.input_path_edit.setText(path)
-            self.reload_split_dimensions()
+            self.reload_input_metadata()
 
     def select_input_dir(self):
         path = QFileDialog.getExistingDirectory(self, "选择 nc 目录")
         if path:
             self.input_path_edit.setText(path)
-            self.reload_split_dimensions()
+            self.reload_input_metadata()
 
     def select_output_dir(self):
         path = QFileDialog.getExistingDirectory(self, "选择输出目录")
@@ -294,7 +337,8 @@ class NCRasterToolsWindow(QMainWindow):
         if path:
             self.clip_vector_path_edit.setText(path)
 
-    def on_input_path_changed(self):
+    def reload_input_metadata(self):
+        self.metadata_sample_file = None
         if self.input_path_edit.text().strip():
             self.reload_split_dimensions()
         else:
@@ -314,33 +358,197 @@ class NCRasterToolsWindow(QMainWindow):
         self.mask_by_reference_check.setChecked(False)
 
     def clear_split_dimensions(self):
+        self.metadata_sample_file = None
         self.tif_split_dims_list.clear()
         self.tif_split_dims_hint.setText("TIFF 拆分维度：等待读取输入 nc")
+        self.clear_spatial_dimensions()
+        self.clear_dimension_configs()
+
+    def clear_spatial_dimensions(self):
+        self.x_dimension_combo.blockSignals(True)
+        self.y_dimension_combo.blockSignals(True)
+        self.x_dimension_combo.clear()
+        self.y_dimension_combo.clear()
+        self.x_dimension_combo.addItem("自动判断", userData=None)
+        self.y_dimension_combo.addItem("自动判断", userData=None)
+        self.x_dimension_combo.setCurrentIndex(0)
+        self.y_dimension_combo.setCurrentIndex(0)
+        self.x_dimension_combo.blockSignals(False)
+        self.y_dimension_combo.blockSignals(False)
+        self.spatial_dimension_hint.setText("空间维度：等待读取输入 nc")
+
+    def clear_dimension_configs(self):
+        self.dimension_config_widgets.clear()
+        while self.dimension_config_layout.count():
+            item = self.dimension_config_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self.dimension_config_empty_hint = BodyLabel("加载输入 nc 后，可为每个维度配置普通标签/时间解析方式。")
+        self.dimension_config_empty_hint.setWordWrap(True)
+        self.dimension_config_layout.addWidget(self.dimension_config_empty_hint)
 
     def reload_split_dimensions(self):
         input_path = self.input_path_edit.text().strip()
         if not input_path:
             self.clear_split_dimensions()
             return
+
+        recursive = self.recursive_check.isChecked()
         try:
-            dimensions, sample_file = NCRasterToolsService.inspect_tif_split_dimensions(
+            spatial_inspections, sample_file = NCRasterToolsService.inspect_spatial_dimension_metadata(
                 input_path,
-                recursive=self.recursive_check.isChecked(),
+                recursive=recursive,
+                sample_file=self.metadata_sample_file,
             )
         except Exception as exc:
+            self.metadata_sample_file = None
             self.clear_split_dimensions()
+            self.spatial_dimension_hint.setText(f"空间维度读取失败：{exc}")
+            return
+        self.metadata_sample_file = sample_file
+        self.populate_spatial_dimensions(spatial_inspections, sample_file)
+
+        try:
+            inspections, sample_file = NCRasterToolsService.inspect_dimension_metadata(
+                input_path,
+                recursive=recursive,
+                sample_file=sample_file,
+                x_dimension=self.x_dimension_combo.currentData(),
+                y_dimension=self.y_dimension_combo.currentData(),
+            )
+            self.metadata_sample_file = sample_file
+        except Exception as exc:
+            self.tif_split_dims_list.clear()
+            self.clear_dimension_configs()
             self.tif_split_dims_hint.setText(f"TIFF 拆分维度读取失败：{exc}")
             return
 
+        dimensions = [inspection.name for inspection in inspections]
         self.tif_split_dims_list.clear()
         for dim_name in dimensions:
             self.tif_split_dims_list.addItem(QListWidgetItem(dim_name))
+        self.populate_dimension_configs(inspections)
 
         if dimensions:
             sample_text = f"；样例文件：{sample_file}" if sample_file else ""
             self.tif_split_dims_hint.setText(f"已读取到可拆分维度：{', '.join(dimensions)}{sample_text}")
         else:
             self.tif_split_dims_hint.setText("未读取到可拆分的非空间维度，输出 TIFF 时将写为单波段")
+
+    def populate_spatial_dimensions(
+        self,
+        inspections: list[SpatialDimensionInspection],
+        sample_file: str | None,
+    ):
+        current_x = self.x_dimension_combo.currentData()
+        current_y = self.y_dimension_combo.currentData()
+        inferred_x = next((item.name for item in inspections if item.inferred_axis == "x"), None)
+        inferred_y = next((item.name for item in inspections if item.inferred_axis == "y"), None)
+
+        self.x_dimension_combo.blockSignals(True)
+        self.y_dimension_combo.blockSignals(True)
+        self.x_dimension_combo.clear()
+        self.y_dimension_combo.clear()
+        self.x_dimension_combo.addItem("自动判断", userData=None)
+        self.y_dimension_combo.addItem("自动判断", userData=None)
+
+        for inspection in inspections:
+            sample_text = f" | 样值: {', '.join(inspection.sample_values)}" if inspection.sample_values else ""
+            label = f"{inspection.name} ({inspection.dtype_text}){sample_text}"
+            self.x_dimension_combo.addItem(label, userData=inspection.name)
+            self.y_dimension_combo.addItem(label, userData=inspection.name)
+
+        selected_x = current_x if current_x in {item.name for item in inspections} else inferred_x
+        selected_y = current_y if current_y in {item.name for item in inspections} else inferred_y
+
+        x_index = self.x_dimension_combo.findData(selected_x)
+        y_index = self.y_dimension_combo.findData(selected_y)
+        self.x_dimension_combo.setCurrentIndex(x_index if x_index >= 0 else 0)
+        self.y_dimension_combo.setCurrentIndex(y_index if y_index >= 0 else 0)
+        self.x_dimension_combo.blockSignals(False)
+        self.y_dimension_combo.blockSignals(False)
+
+        if inspections:
+            sample_text = f"；样例文件：{sample_file}" if sample_file else ""
+            self.spatial_dimension_hint.setText(f"空间维度候选已加载{sample_text}。")
+        else:
+            self.spatial_dimension_hint.setText("未识别到可选空间维度，将继续使用自动判断。")
+
+    def populate_dimension_configs(self, inspections: list[DimensionInspection]):
+        self.clear_dimension_configs()
+        if not inspections:
+            self.dimension_config_empty_hint.setText("没有可配置的非空间维度。")
+            return
+
+        for inspection in inspections:
+            card = QFrame()
+            card.setStyleSheet(
+                """
+                QFrame {
+                    background: rgba(255, 255, 255, 0.82);
+                    border: 1px solid rgba(210, 220, 235, 0.95);
+                    border-radius: 14px;
+                }
+                """
+            )
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(12, 12, 12, 12)
+            card_layout.setSpacing(8)
+
+            title = BodyLabel(f"{inspection.name}  |  dtype={inspection.dtype_text}")
+            title.setWordWrap(True)
+            samples = BodyLabel(f"样值示例：{', '.join(inspection.sample_values) if inspection.sample_values else '无'}")
+            samples.setWordWrap(True)
+            hint = BodyLabel(inspection.hint)
+            hint.setWordWrap(True)
+
+            role_combo = ModernComboBox()
+            for value, label in NCRasterToolsService.time_role_items():
+                role_combo.addItem(label, userData=value)
+            parser_combo = ModernComboBox()
+            for value, label in NCRasterToolsService.time_parser_items():
+                parser_combo.addItem(label, userData=value)
+            format_edit = ModernLineEdit()
+            format_edit.setText("%Y_%m_%d")
+            format_edit.setPlaceholderText("时间格式，例如 %Y_%m_%d")
+
+            role_index = role_combo.findData(inspection.inferred_role)
+            role_combo.setCurrentIndex(role_index if role_index >= 0 else 0)
+            parser_default = inspection.inferred_parser or "auto"
+            parser_index = parser_combo.findData(parser_default if inspection.inferred_role == "time" else "auto")
+            parser_combo.setCurrentIndex(parser_index if parser_index >= 0 else 0)
+
+            row = QHBoxLayout()
+            row.addWidget(self._field_block("维度角色", role_combo), 1)
+            row.addWidget(self._field_block("时间解析", parser_combo), 1)
+            row.addWidget(self._field_block("输出格式", format_edit), 1)
+
+            card_layout.addWidget(title)
+            card_layout.addWidget(samples)
+            card_layout.addWidget(hint)
+            card_layout.addLayout(row)
+            self.dimension_config_layout.addWidget(card)
+
+            role_combo.currentIndexChanged.connect(
+                lambda _index, dim_name=inspection.name: self.update_dimension_config_state(dim_name)
+            )
+
+            self.dimension_config_widgets[inspection.name] = {
+                "role": role_combo,
+                "parser": parser_combo,
+                "format": format_edit,
+                "hint": hint,
+            }
+            self.update_dimension_config_state(inspection.name)
+
+    def update_dimension_config_state(self, dim_name: str):
+        widgets = self.dimension_config_widgets.get(dim_name)
+        if not widgets:
+            return
+        is_time = widgets["role"].currentData() == "time"
+        widgets["parser"].setEnabled(is_time)
+        widgets["format"].setEnabled(is_time)
 
     def update_reference_metadata(self, path: str):
         suffix = path.lower()
@@ -413,6 +621,13 @@ class NCRasterToolsWindow(QMainWindow):
         reference_path = self.reference_path_edit.text().strip() or None
         reference_nodata = NCRasterToolsService.parse_optional_float(self.reference_nodata_edit.text())
         clip_vector_path = self.clip_vector_path_edit.text().strip() or None
+        source_crs = self.source_crs_edit.text().strip() or None
+        x_dimension = self.x_dimension_combo.currentData()
+        y_dimension = self.y_dimension_combo.currentData()
+        if bool(x_dimension) ^ bool(y_dimension):
+            raise ValueError("手动指定空间维度时，X/Y 维度必须同时选择")
+        if x_dimension and y_dimension and x_dimension == y_dimension:
+            raise ValueError("X/Y 维度不能选择同一个维度")
         target_crs = self.target_crs_edit.text().strip() or None
         res_x = NCRasterToolsService.parse_optional_float(self.resolution_x_edit.text())
         res_y = NCRasterToolsService.parse_optional_float(self.resolution_y_edit.text())
@@ -428,6 +643,14 @@ class NCRasterToolsWindow(QMainWindow):
         crop_bounds = NCRasterToolsService.parse_bounds_text(self.bounds_edit.text())
         variables = NCRasterToolsService.parse_variable_text(self.variables_edit.text())
         tif_split_dims = tuple(item.text() for item in self.tif_split_dims_list.selectedItems())
+        dimension_label_configs = {
+            dim_name: DimensionLabelConfig(
+                role=widgets["role"].currentData(),
+                parser=widgets["parser"].currentData(),
+                time_format=widgets["format"].text().strip() or "%Y_%m_%d",
+            )
+            for dim_name, widgets in self.dimension_config_widgets.items()
+        }
         suffix = self.suffix_edit.text().strip() or "aligned"
 
         if self.mask_by_reference_check.isChecked():
@@ -436,11 +659,29 @@ class NCRasterToolsWindow(QMainWindow):
             if not reference_path.lower().endswith((".tif", ".tiff")):
                 raise ValueError("参考掩膜当前仅支持 tif/tiff")
 
+        clip_methods: list[str] = []
+        if reference_path:
+            clip_methods.append("参考栅格对齐")
+        if clip_vector_path:
+            clip_methods.append("矢量裁切")
+        if crop_bounds is not None:
+            clip_methods.append("范围裁切")
+        if len(clip_methods) > 1:
+            raise ValueError(f"裁切方式必须三选一，当前同时选择了：{'、'.join(clip_methods)}")
+
+        if reference_path and target_crs:
+            raise ValueError("使用参考栅格时无需再填写目标投影；输出投影将严格跟随参考文件")
+        if reference_path and resolution is not None:
+            raise ValueError("使用参考栅格时无需再填写分辨率；输出分辨率将严格跟随参考文件")
+
         return NCRasterBatchOptions(
             input_path=input_path,
             output_dir=output_dir,
             output_format=self.output_format_combo.currentData(),
             recursive=self.recursive_check.isChecked(),
+            source_crs=source_crs,
+            x_dimension=x_dimension,
+            y_dimension=y_dimension,
             reference_path=reference_path,
             reference_nodata=reference_nodata,
             mask_by_reference=self.mask_by_reference_check.isChecked(),
@@ -453,6 +694,7 @@ class NCRasterToolsWindow(QMainWindow):
             suffix=suffix,
             variables=variables,
             tif_split_dims=tif_split_dims,
+            dimension_label_configs=dimension_label_configs,
         )
 
     def cancel_processing(self):
@@ -501,6 +743,11 @@ class NCRasterToolsWindow(QMainWindow):
     def set_form_enabled(self, enabled: bool):
         for widget in self.form_widgets:
             widget.setEnabled(enabled)
+        for dim_name, widgets in self.dimension_config_widgets.items():
+            widgets["role"].setEnabled(enabled)
+            is_time = widgets["role"].currentData() == "time"
+            widgets["parser"].setEnabled(enabled and is_time)
+            widgets["format"].setEnabled(enabled and is_time)
 
     def closeEvent(self, event: QCloseEvent):
         if self.worker_thread is not None and self.worker_thread.isRunning():

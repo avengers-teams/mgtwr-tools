@@ -6,14 +6,15 @@ import re
 import shutil
 import tempfile
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 
 import geopandas as gpd
 import numpy as np
 import rasterio
-from netCDF4 import Dataset
+from netCDF4 import Dataset, num2date
 from rasterio.features import geometry_mask
 from rasterio.crs import CRS
 from rasterio.enums import Resampling
@@ -34,6 +35,7 @@ class NCRasterBatchOptions:
     output_dir: str
     output_format: str = "nc"
     recursive: bool = False
+    source_crs: str | None = None
     reference_path: str | None = None
     reference_nodata: float | int | None = None
     mask_by_reference: bool = False
@@ -44,8 +46,11 @@ class NCRasterBatchOptions:
     nodata: float | int | None = None
     resampling: str = "nearest"
     suffix: str = "aligned"
+    x_dimension: str | None = None
+    y_dimension: str | None = None
     variables: tuple[str, ...] = field(default_factory=tuple)
     tif_split_dims: tuple[str, ...] = field(default_factory=tuple)
+    dimension_label_configs: dict[str, "DimensionLabelConfig"] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -66,6 +71,32 @@ class ClipGeometry:
 class RasterMaskSource:
     mask: np.ndarray
     grid: SpatialGrid
+
+
+@dataclass(slots=True)
+class DimensionInspection:
+    name: str
+    dtype_text: str
+    sample_values: tuple[str, ...]
+    inferred_role: str
+    inferred_parser: str | None
+    hint: str
+
+
+@dataclass(slots=True)
+class SpatialDimensionInspection:
+    name: str
+    dtype_text: str
+    sample_values: tuple[str, ...]
+    inferred_axis: str | None
+    hint: str
+
+
+@dataclass(slots=True)
+class DimensionLabelConfig:
+    role: str = "label"
+    parser: str = "auto"
+    time_format: str = "%Y_%m_%d"
 
 
 @dataclass(slots=True)
@@ -120,6 +151,23 @@ class SpatialVariableContext:
 
 
 class NCRasterToolsService:
+    FLOAT_PRESERVING_RESAMPLING = {"bilinear", "cubic", "average"}
+    TIME_ROLE_ITEMS = [
+        ("label", "普通标签"),
+        ("time", "时间维度"),
+    ]
+    TIME_PARSER_ITEMS = [
+        ("auto", "自动判断"),
+        ("string", "字符串日期"),
+        ("netcdf", "NetCDF 时间"),
+        ("timestamp_s", "Unix 秒时间戳"),
+        ("timestamp_ms", "Unix 毫秒时间戳"),
+        ("timestamp_us", "Unix 微秒时间戳"),
+        ("timestamp_ns", "Unix 纳秒时间戳"),
+        ("yyyymmdd", "YYYYMMDD 整数"),
+        ("yyyymm", "YYYYMM 整数"),
+        ("yyyy", "YYYY 整数"),
+    ]
     X_ALIASES = {
         "x",
         "lon",
@@ -163,6 +211,14 @@ class NCRasterToolsService:
             ("both", "同时输出 NC 和 TIFF"),
         ]
 
+    @classmethod
+    def time_role_items(cls) -> list[tuple[str, str]]:
+        return list(cls.TIME_ROLE_ITEMS)
+
+    @classmethod
+    def time_parser_items(cls) -> list[tuple[str, str]]:
+        return list(cls.TIME_PARSER_ITEMS)
+
     @staticmethod
     def parse_optional_float(text: str) -> float | None:
         value = text.strip()
@@ -205,14 +261,15 @@ class NCRasterToolsService:
         input_path: str,
         recursive: bool = False,
         variable_filter: Iterable[str] = (),
+        sample_file: str | None = None,
+        x_dimension: str | None = None,
+        y_dimension: str | None = None,
     ) -> tuple[list[str], str | None]:
-        input_files = cls._collect_input_files(input_path, recursive)
-        if not input_files:
+        sample_file = cls._resolve_sample_file(input_path, recursive, sample_file)
+        if sample_file is None:
             return [], None
-
-        sample_file = input_files[0]
         with Dataset(sample_file, "r") as dataset:
-            contexts = cls._collect_spatial_contexts(dataset, variable_filter)
+            contexts = cls._collect_spatial_contexts(dataset, variable_filter, x_dimension, y_dimension)
             if not contexts:
                 return [], sample_file
 
@@ -227,12 +284,55 @@ class NCRasterToolsService:
             return dimensions, sample_file
 
     @classmethod
+    def inspect_dimension_metadata(
+        cls,
+        input_path: str,
+        recursive: bool = False,
+        variable_filter: Iterable[str] = (),
+        sample_file: str | None = None,
+        x_dimension: str | None = None,
+        y_dimension: str | None = None,
+    ) -> tuple[list[DimensionInspection], str | None]:
+        sample_file = cls._resolve_sample_file(input_path, recursive, sample_file)
+        if sample_file is None:
+            return [], None
+        with Dataset(sample_file, "r") as dataset:
+            contexts = cls._collect_spatial_contexts(dataset, variable_filter, x_dimension, y_dimension)
+            if not contexts:
+                return [], sample_file
+
+            seen: set[str] = set()
+            inspections: list[DimensionInspection] = []
+            for context in contexts:
+                for dim_name in context.dimensions:
+                    if dim_name in {context.x_dim, context.y_dim} or dim_name in seen:
+                        continue
+                    seen.add(dim_name)
+                    inspections.append(cls._inspect_dimension(dataset, dim_name))
+            return inspections, sample_file
+
+    @classmethod
+    def inspect_spatial_dimension_metadata(
+        cls,
+        input_path: str,
+        recursive: bool = False,
+        variable_filter: Iterable[str] = (),
+        sample_file: str | None = None,
+    ) -> tuple[list[SpatialDimensionInspection], str | None]:
+        sample_file = cls._resolve_sample_file(input_path, recursive, sample_file)
+        if sample_file is None:
+            return [], None
+        with Dataset(sample_file, "r") as dataset:
+            return cls._inspect_spatial_dimensions(dataset, variable_filter), sample_file
+
+    @classmethod
     def process_batch(
         cls,
         options: NCRasterBatchOptions,
         progress_callback: ProgressCallback | None = None,
         stop_callback: StopCallback | None = None,
     ) -> BatchProcessResult:
+        cls._validate_options(options)
         cls._ensure_directory(options.output_dir)
         progress = progress_callback or (lambda _message: None)
         should_stop = stop_callback or (lambda: False)
@@ -290,6 +390,27 @@ class NCRasterToolsService:
         )
 
     @classmethod
+    def _validate_options(cls, options: NCRasterBatchOptions) -> None:
+        if bool(options.x_dimension) ^ bool(options.y_dimension):
+            raise ValueError("手动指定空间维度时，X/Y 维度必须同时选择")
+        if options.x_dimension and options.y_dimension and options.x_dimension == options.y_dimension:
+            raise ValueError("X/Y 维度不能选择同一个维度")
+
+        clip_methods: list[str] = []
+        if options.reference_path:
+            clip_methods.append("参考栅格对齐")
+        if options.clip_vector_path:
+            clip_methods.append("矢量裁切")
+        if options.crop_bounds is not None:
+            clip_methods.append("范围裁切")
+        if len(clip_methods) > 1:
+            raise ValueError(f"裁切方式必须三选一，当前同时选择了：{'、'.join(clip_methods)}")
+        if options.reference_path and options.target_crs:
+            raise ValueError("使用参考栅格时无需再填写目标投影；输出投影将严格跟随参考文件")
+        if options.reference_path and options.resolution is not None:
+            raise ValueError("使用参考栅格时无需再填写分辨率；输出分辨率将严格跟随参考文件")
+
+    @classmethod
     def _process_single_file(
         cls,
         input_path: str,
@@ -301,9 +422,15 @@ class NCRasterToolsService:
         should_stop: StopCallback,
     ) -> list[str]:
         with Dataset(input_path, "r") as src_ds:
-            contexts = cls._collect_spatial_contexts(src_ds, options.variables)
+            contexts = cls._collect_spatial_contexts(
+                src_ds,
+                options.variables,
+                options.x_dimension,
+                options.y_dimension,
+            )
             if not contexts:
                 raise ValueError("未发现包含空间维度的变量")
+            contexts = cls._apply_source_crs(contexts, options.source_crs)
 
             if options.output_format in {"nc", "both"}:
                 cls._ensure_nc_grid_compatibility(contexts, options, reference_grid, clip_geometry)
@@ -414,7 +541,7 @@ class NCRasterToolsService:
                 output_dims[context.y_axis] = output_y_name
                 output_dims[context.x_axis] = output_x_name
                 fill_value = cls._resolve_dst_nodata(variable, options.nodata)
-                output_dtype = cls._resolve_output_dtype(np.dtype(variable.dtype), fill_value)
+                output_dtype = cls._resolve_output_dtype(np.dtype(variable.dtype), fill_value, options.resampling)
                 dst_var = cls._create_output_variable(
                     dst_ds,
                     variable_name,
@@ -463,17 +590,19 @@ class NCRasterToolsService:
     ) -> list[str]:
         source_var = src_ds.variables[context.name]
         source_data = source_var[:]
+        src_nodata = cls._resolve_src_nodata(source_var)
         if isinstance(source_data, np.ma.MaskedArray):
-            source_fill = cls._resolve_src_nodata(source_var)
-            fill_value = source_fill if source_fill is not None else np.nan
-            source_data = source_data.filled(fill_value)
+            if src_nodata is None:
+                source_data = source_data.astype(np.float32).filled(np.nan)
+                src_nodata = np.nan
+            else:
+                source_data = source_data.filled(src_nodata)
 
         array = np.asarray(source_data)
         array = cls._normalize_spatial_axes(array, context)
-        src_nodata = cls._resolve_src_nodata(source_var)
         dst_nodata = cls._resolve_dst_nodata(source_var, options.nodata)
 
-        write_dtype = cls._resolve_output_dtype(array.dtype, dst_nodata)
+        write_dtype = cls._resolve_output_dtype(array.dtype, dst_nodata, options.resampling)
         leading_axes = [axis for axis in range(len(context.dimensions)) if axis not in {context.y_axis, context.x_axis}]
         leading_dim_names = [context.dimensions[axis] for axis in leading_axes]
         moved = np.moveaxis(array, leading_axes + [context.y_axis, context.x_axis], list(range(array.ndim)))
@@ -506,12 +635,18 @@ class NCRasterToolsService:
                 cls._write_nc_slice(nc_variable, context, leading_index, destination)
 
             if tif_dir:
-                split_key, band_label = cls._partition_tif_indices(leading_dim_names, leading_index, split_positions, src_ds)
+                split_key, band_label = cls._partition_tif_indices(
+                    leading_dim_names,
+                    leading_index,
+                    split_positions,
+                    src_ds,
+                    options,
+                )
                 tif_groups.setdefault(split_key, []).append((band_label, destination))
 
         if tif_dir:
             for split_key, band_items in tif_groups.items():
-                tif_path = cls._build_tif_output_path(context.name, split_key, tif_dir)
+                tif_path = cls._build_tif_output_path(context.name, split_key, tif_dir, options)
                 band_labels = [label for label, _array in band_items]
                 tif_stack = np.stack([data for _label, data in band_items], axis=0)
                 cls._write_tif(
@@ -571,33 +706,24 @@ class NCRasterToolsService:
         clip_geometry: ClipGeometry | None,
     ) -> SpatialGrid:
         if reference_grid is not None:
-            working_grid = reference_grid
-        else:
-            target_crs = cls._parse_crs(options.target_crs) if options.target_crs else source_grid.crs
-            if source_grid.crs is None and target_crs is not None:
-                source_grid = SpatialGrid(
-                    width=source_grid.width,
-                    height=source_grid.height,
-                    transform=source_grid.transform,
-                    crs=target_crs,
-                    x_name=source_grid.x_name,
-                    y_name=source_grid.y_name,
-                )
+            return reference_grid
 
-            working_grid = source_grid
-            if target_crs != source_grid.crs:
-                if source_grid.crs is None:
-                    raise ValueError("源 nc 缺少坐标系，无法执行重投影，请指定带坐标系的参考数据")
-                transform, width, height = calculate_default_transform(
-                    source_grid.crs,
-                    target_crs,
-                    source_grid.width,
-                    source_grid.height,
-                    *source_grid.bounds,
-                    resolution=options.resolution,
-                )
-                x_name, y_name = cls._derive_output_dim_names_from_crs(target_crs)
-                working_grid = SpatialGrid(width=width, height=height, transform=transform, crs=target_crs, x_name=x_name, y_name=y_name)
+        if source_grid.crs is None:
+            raise ValueError("源 nc 缺少坐标系，请先提供源 CRS")
+
+        target_crs = cls._parse_crs(options.target_crs) if options.target_crs else source_grid.crs
+        working_grid = source_grid
+        if target_crs != source_grid.crs:
+            transform, width, height = calculate_default_transform(
+                source_grid.crs,
+                target_crs,
+                source_grid.width,
+                source_grid.height,
+                *source_grid.bounds,
+                resolution=options.resolution,
+            )
+            x_name, y_name = cls._derive_output_dim_names_from_crs(target_crs)
+            working_grid = SpatialGrid(width=width, height=height, transform=transform, crs=target_crs, x_name=x_name, y_name=y_name)
 
         clip_bounds = cls._clip_bounds_for_grid(clip_geometry, working_grid) if clip_geometry else None
         bounds = options.crop_bounds or clip_bounds or working_grid.bounds
@@ -633,6 +759,14 @@ class NCRasterToolsService:
                 if not contexts:
                     raise ValueError("参考 nc 中未发现可用空间网格")
                 source_grid = contexts[0].source_grid
+                if source_grid.crs is None:
+                    raise ValueError("参考 nc 缺少坐标系，无法作为对齐参考")
+                for context in contexts[1:]:
+                    candidate_grid = context.source_grid
+                    if candidate_grid.crs is None:
+                        raise ValueError("参考 nc 缺少坐标系，无法作为对齐参考")
+                    if not source_grid.is_equivalent(candidate_grid):
+                        raise ValueError("参考 nc 包含多个空间网格，无法自动确定唯一参考网格")
                 x_name, y_name = cls._derive_output_dim_names_from_crs(source_grid.crs)
                 return SpatialGrid(
                     width=source_grid.width,
@@ -665,7 +799,7 @@ class NCRasterToolsService:
                 if data.ndim == 2:
                     data = data[np.newaxis, ...]
                 invalid_stack = np.isclose(data, reference_nodata, equal_nan=True) if np.issubdtype(data.dtype, np.floating) else data == reference_nodata
-                return RasterMaskSource(mask=np.all(invalid_stack, axis=0), grid=grid)
+                return RasterMaskSource(mask=np.any(invalid_stack, axis=0), grid=grid)
 
             dataset_mask = dataset.dataset_mask()
             return RasterMaskSource(mask=(dataset_mask == 0), grid=grid)
@@ -681,6 +815,26 @@ class NCRasterToolsService:
         if geometry is None or geometry.is_empty:
             raise ValueError("裁切矢量没有有效几何")
         return ClipGeometry(geometry=geometry, crs=CRS.from_user_input(dataframe.crs))
+
+    @classmethod
+    def _inspect_dimension(cls, dataset: Dataset, dim_name: str) -> DimensionInspection:
+        variable = dataset.variables.get(dim_name)
+        dtype_text = str(getattr(variable, "dtype", "unknown")) if variable is not None else "unknown"
+        sample_values = cls._dimension_sample_values(variable)
+        inferred_parser = cls._infer_time_parser(variable, dim_name)
+        inferred_role = "time" if inferred_parser is not None else "label"
+        if inferred_parser:
+            hint = f"自动判断为时间，建议解析方式：{inferred_parser}"
+        else:
+            hint = "未自动判断为时间；如需按时间格式输出，请手动改为时间维度并选择解析方式"
+        return DimensionInspection(
+            name=dim_name,
+            dtype_text=dtype_text,
+            sample_values=sample_values,
+            inferred_role=inferred_role,
+            inferred_parser=inferred_parser,
+            hint=hint,
+        )
 
     @classmethod
     def _clip_bounds_for_grid(
@@ -742,39 +896,67 @@ class NCRasterToolsService:
         return destination.astype(bool)
 
     @classmethod
+    def _apply_source_crs(
+        cls,
+        contexts: list[SpatialVariableContext],
+        source_crs_text: str | None,
+    ) -> list[SpatialVariableContext]:
+        missing_contexts = [context for context in contexts if context.source_grid.crs is None]
+        if not missing_contexts:
+            return contexts
+        if not source_crs_text:
+            variable_names = "、".join(context.name for context in missing_contexts[:3])
+            if len(missing_contexts) > 3:
+                variable_names += " 等"
+            raise ValueError(f"源 nc 缺少坐标系，请先填写源 CRS 后再处理（受影响变量：{variable_names}）")
+
+        source_crs = cls._parse_crs(source_crs_text)
+        updated_contexts: list[SpatialVariableContext] = []
+        for context in contexts:
+            if context.source_grid.crs is not None:
+                updated_contexts.append(context)
+                continue
+            updated_contexts.append(
+                replace(
+                    context,
+                    source_grid=replace(context.source_grid, crs=source_crs),
+                )
+            )
+        return updated_contexts
+
+    @classmethod
     def _collect_spatial_contexts(
         cls,
         dataset: Dataset,
         variable_filter: Iterable[str],
+        x_dimension: str | None = None,
+        y_dimension: str | None = None,
     ) -> list[SpatialVariableContext]:
         filter_set = {name for name in variable_filter if name}
         contexts: list[SpatialVariableContext] = []
         for variable_name, variable in dataset.variables.items():
             if filter_set and variable_name not in filter_set:
                 continue
-            context = cls._build_spatial_context(dataset, variable_name, variable)
+            context = cls._build_spatial_context(dataset, variable_name, variable, x_dimension, y_dimension)
             if context is not None:
                 contexts.append(context)
         return contexts
 
     @classmethod
-    def _build_spatial_context(cls, dataset: Dataset, variable_name: str, variable) -> SpatialVariableContext | None:
+    def _build_spatial_context(
+        cls,
+        dataset: Dataset,
+        variable_name: str,
+        variable,
+        x_dimension: str | None = None,
+        y_dimension: str | None = None,
+    ) -> SpatialVariableContext | None:
         if getattr(variable, "ndim", 0) < 2:
             return None
 
-        dim_types = [cls._infer_axis_type(dataset, dimension_name) for dimension_name in variable.dimensions]
-        x_candidates = [index for index, axis_type in enumerate(dim_types) if axis_type == "x"]
-        y_candidates = [index for index, axis_type in enumerate(dim_types) if axis_type == "y"]
-        if not x_candidates or not y_candidates:
+        x_axis, y_axis, x_dim, y_dim = cls._resolve_spatial_axes(dataset, variable, x_dimension, y_dimension)
+        if x_axis is None or y_axis is None or x_dim is None or y_dim is None:
             return None
-
-        x_axis = x_candidates[-1]
-        y_axis = y_candidates[-1]
-        if x_axis == y_axis:
-            return None
-
-        x_dim = variable.dimensions[x_axis]
-        y_dim = variable.dimensions[y_axis]
         x_values = cls._resolve_coordinate_values(dataset, x_dim)
         y_values = cls._resolve_coordinate_values(dataset, y_dim)
         if x_values is None or y_values is None:
@@ -796,6 +978,38 @@ class NCRasterToolsService:
             y_reverse=y_reverse,
             grid_mapping_name=grid_mapping_name,
         )
+
+    @classmethod
+    def _resolve_spatial_axes(
+        cls,
+        dataset: Dataset,
+        variable,
+        x_dimension: str | None = None,
+        y_dimension: str | None = None,
+    ) -> tuple[int | None, int | None, str | None, str | None]:
+        if x_dimension and y_dimension:
+            x_candidates = [index for index, dim_name in enumerate(variable.dimensions) if dim_name == x_dimension]
+            y_candidates = [index for index, dim_name in enumerate(variable.dimensions) if dim_name == y_dimension]
+            if not x_candidates or not y_candidates:
+                return None, None, None, None
+            x_axis = x_candidates[-1]
+            y_axis = y_candidates[-1]
+            if x_axis == y_axis:
+                return None, None, None, None
+            return x_axis, y_axis, x_dimension, y_dimension
+
+        dim_types = [cls._infer_axis_type(dataset, dimension_name) for dimension_name in variable.dimensions]
+        x_candidates = [index for index, axis_type in enumerate(dim_types) if axis_type == "x"]
+        y_candidates = [index for index, axis_type in enumerate(dim_types) if axis_type == "y"]
+        if not x_candidates or not y_candidates:
+            return None, None, None, None
+
+        x_axis = x_candidates[-1]
+        y_axis = y_candidates[-1]
+        if x_axis == y_axis:
+            return None, None, None, None
+
+        return x_axis, y_axis, variable.dimensions[x_axis], variable.dimensions[y_axis]
 
     @classmethod
     def _build_source_grid(
@@ -918,6 +1132,235 @@ class NCRasterToolsService:
         if getattr(variable.dtype, "kind", "") not in {"f", "i", "u"}:
             return None
         return np.asarray(variable[:], dtype=np.float64)
+
+    @classmethod
+    def _inspect_spatial_dimensions(
+        cls,
+        dataset: Dataset,
+        variable_filter: Iterable[str],
+    ) -> list[SpatialDimensionInspection]:
+        filter_set = {name for name in variable_filter if name}
+        seen: set[str] = set()
+        inspections: list[SpatialDimensionInspection] = []
+
+        for variable_name, variable in dataset.variables.items():
+            if getattr(variable, "ndim", 0) < 2:
+                continue
+            if filter_set and variable_name not in filter_set:
+                continue
+            for dim_name in variable.dimensions:
+                if dim_name in seen:
+                    continue
+                coord_var = dataset.variables.get(dim_name)
+                coord_values = cls._resolve_coordinate_values(dataset, dim_name)
+                if coord_values is None:
+                    continue
+                seen.add(dim_name)
+                inferred_axis = cls._infer_axis_type(dataset, dim_name)
+                if inferred_axis == "x":
+                    hint = "当前规则推断为 X 轴，可改成别的维度后再处理。"
+                elif inferred_axis == "y":
+                    hint = "当前规则推断为 Y 轴，可改成别的维度后再处理。"
+                else:
+                    hint = "未自动识别为 X/Y，可在界面中手动指定。"
+                inspections.append(
+                    SpatialDimensionInspection(
+                        name=dim_name,
+                        dtype_text=str(getattr(coord_var, "dtype", "unknown")),
+                        sample_values=cls._dimension_sample_values(coord_var),
+                        inferred_axis=inferred_axis,
+                        hint=hint,
+                    )
+                )
+        return inspections
+
+    @classmethod
+    def _dimension_sample_values(cls, variable, sample_size: int = 3) -> tuple[str, ...]:
+        if variable is None or getattr(variable, "ndim", 0) != 1 or len(variable) == 0:
+            return ()
+        samples = []
+        for index in range(min(sample_size, len(variable))):
+            samples.append(str(cls._coerce_dimension_value(variable[index])))
+        return tuple(samples)
+
+    @classmethod
+    def _resolve_sample_file(
+        cls,
+        input_path: str,
+        recursive: bool,
+        sample_file: str | None,
+    ) -> str | None:
+        if sample_file:
+            return sample_file
+        input_files = cls._collect_input_files(input_path, recursive)
+        if not input_files:
+            return None
+        return input_files[0]
+
+    @classmethod
+    def _infer_time_parser(cls, variable, dim_name: str) -> str | None:
+        if variable is None:
+            return None
+        units = str(getattr(variable, "units", "")).lower()
+        if "since" in units:
+            return "netcdf"
+
+        samples = cls._dimension_sample_values(variable)
+        lowered_name = dim_name.lower()
+        likely_time_name = any(token in lowered_name for token in ("time", "date", "day", "month", "year"))
+
+        if cls._samples_match_string_time(samples):
+            return "string"
+
+        numeric_values = cls._numeric_samples(samples)
+        if numeric_values:
+            for parser_name in ("yyyymmdd", "yyyymm", "yyyy", "timestamp_s", "timestamp_ms", "timestamp_us", "timestamp_ns"):
+                if cls._samples_match_numeric_time(numeric_values, parser_name):
+                    return parser_name
+
+        return "string" if likely_time_name and samples else None
+
+    @staticmethod
+    def _coerce_dimension_value(value):
+        value_array = np.asarray(value)
+        if value_array.shape == ():
+            scalar = value_array.item()
+        else:
+            scalar = value
+        if isinstance(scalar, bytes):
+            return scalar.decode("utf-8", errors="ignore")
+        return scalar
+
+    @classmethod
+    def _samples_match_string_time(cls, sample_values: tuple[str, ...]) -> bool:
+        if not sample_values:
+            return False
+        parsed = 0
+        for value in sample_values:
+            if cls._parse_datetime_string(value) is not None:
+                parsed += 1
+        return parsed == len(sample_values)
+
+    @staticmethod
+    def _numeric_samples(sample_values: tuple[str, ...]) -> list[int | float]:
+        values: list[int | float] = []
+        for value in sample_values:
+            try:
+                number = float(value)
+            except Exception:
+                return []
+            if number.is_integer():
+                values.append(int(number))
+            else:
+                values.append(number)
+        return values
+
+    @classmethod
+    def _samples_match_numeric_time(cls, sample_values: list[int | float], parser_name: str) -> bool:
+        for value in sample_values:
+            if parser_name.startswith("timestamp_") and not cls._looks_like_timestamp(value, parser_name):
+                return False
+            if cls._parse_numeric_time_value(value, parser_name) is None:
+                return False
+        return True
+
+    @staticmethod
+    def _looks_like_timestamp(value: int | float, parser_name: str) -> bool:
+        try:
+            numeric_value = float(value)
+        except Exception:
+            return False
+        absolute = abs(numeric_value)
+        thresholds = {
+            "timestamp_s": (1e8, 1e10),
+            "timestamp_ms": (1e11, 1e14),
+            "timestamp_us": (1e14, 1e17),
+            "timestamp_ns": (1e17, 1e20),
+        }
+        lower, upper = thresholds.get(parser_name, (0, float("inf")))
+        return lower <= absolute <= upper
+
+    @staticmethod
+    def _parse_datetime_string(value: str) -> datetime | None:
+        text = str(value).strip()
+        if not text:
+            return None
+        normalized = text.replace("/", "-").replace("T", " ")
+        for candidate in (normalized, normalized.replace("Z", "+00:00")):
+            try:
+                return datetime.fromisoformat(candidate)
+            except ValueError:
+                pass
+        for pattern in ("%Y%m%d", "%Y%m", "%Y-%m", "%Y_%m_%d", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d"):
+            try:
+                return datetime.strptime(text, pattern)
+            except ValueError:
+                continue
+        return None
+
+    @classmethod
+    def _format_time_value(
+        cls,
+        variable,
+        value,
+        dim_name: str,
+        config: DimensionLabelConfig,
+    ) -> str | None:
+        parser_name = config.parser
+        if parser_name == "auto":
+            parser_name = cls._infer_time_parser(variable, dim_name)
+        if not parser_name:
+            return None
+        dt_value = cls._parse_time_value(variable, value, parser_name)
+        if dt_value is None:
+            return None
+        time_format = config.time_format or "%Y_%m_%d"
+        return dt_value.strftime(time_format)
+
+    @classmethod
+    def _parse_time_value(cls, variable, value, parser_name: str) -> datetime | None:
+        if parser_name == "string":
+            return cls._parse_datetime_string(str(value))
+        if parser_name == "netcdf":
+            units = getattr(variable, "units", None)
+            if not units:
+                return None
+            calendar = getattr(variable, "calendar", "standard")
+            try:
+                parsed = num2date(value, units=units, calendar=calendar)
+            except Exception:
+                return None
+            if isinstance(parsed, datetime):
+                return parsed
+            return datetime(parsed.year, parsed.month, parsed.day, parsed.hour, parsed.minute, parsed.second)
+        return cls._parse_numeric_time_value(value, parser_name)
+
+    @staticmethod
+    def _parse_numeric_time_value(value, parser_name: str) -> datetime | None:
+        try:
+            numeric_value = float(value)
+        except Exception:
+            return None
+
+        try:
+            if parser_name == "timestamp_s":
+                return datetime.fromtimestamp(numeric_value, tz=timezone.utc).replace(tzinfo=None)
+            if parser_name == "timestamp_ms":
+                return datetime.fromtimestamp(numeric_value / 1_000.0, tz=timezone.utc).replace(tzinfo=None)
+            if parser_name == "timestamp_us":
+                return datetime.fromtimestamp(numeric_value / 1_000_000.0, tz=timezone.utc).replace(tzinfo=None)
+            if parser_name == "timestamp_ns":
+                return datetime.fromtimestamp(numeric_value / 1_000_000_000.0, tz=timezone.utc).replace(tzinfo=None)
+            text = str(int(numeric_value))
+            if parser_name == "yyyymmdd":
+                return datetime.strptime(text, "%Y%m%d")
+            if parser_name == "yyyymm":
+                return datetime.strptime(text, "%Y%m")
+            if parser_name == "yyyy":
+                return datetime.strptime(text, "%Y")
+        except Exception:
+            return None
+        return None
 
     @classmethod
     def _create_spatial_coord_vars(
@@ -1047,8 +1490,9 @@ class NCRasterToolsService:
         variable_name: str,
         split_key: tuple[tuple[str, str], ...],
         tif_dir: str,
+        options: NCRasterBatchOptions,
     ) -> str:
-        suffix = cls._split_key_suffix(split_key)
+        suffix = cls._split_key_suffix(split_key, options)
         if suffix:
             filename = f"{cls._sanitize_filename(variable_name)}_{suffix}.tif"
         else:
@@ -1056,10 +1500,22 @@ class NCRasterToolsService:
         return os.path.join(tif_dir, filename)
 
     @classmethod
-    def _split_key_suffix(cls, split_key: tuple[tuple[str, str], ...]) -> str:
+    def _split_key_suffix(
+        cls,
+        split_key: tuple[tuple[str, str], ...],
+        options: NCRasterBatchOptions,
+    ) -> str:
         if not split_key:
             return ""
-        return "_".join(f"{cls._sanitize_filename(dim_name)}_{cls._sanitize_filename(str(index_value))}" for dim_name, index_value in split_key)
+        parts: list[str] = []
+        for dim_name, index_value in split_key:
+            config = options.dimension_label_configs.get(dim_name, DimensionLabelConfig())
+            safe_value = cls._sanitize_filename(str(index_value))
+            if config.role == "time":
+                parts.append(safe_value)
+            else:
+                parts.append(f"{cls._sanitize_filename(dim_name)}_{safe_value}")
+        return "_".join(parts)
 
     @classmethod
     def _resolve_tif_split_positions(cls, leading_dim_names: list[str], requested_split_dims: tuple[str, ...]) -> list[int]:
@@ -1077,25 +1533,36 @@ class NCRasterToolsService:
         leading_index: tuple[int, ...],
         split_positions: list[int],
         dataset: Dataset,
+        options: NCRasterBatchOptions,
     ) -> tuple[tuple[tuple[str, str], ...], str]:
         split_key_parts: list[tuple[str, str]] = []
         band_parts: list[str] = []
         for position, (dim_name, index_value) in enumerate(zip(leading_dim_names, leading_index)):
-            value_label = cls._slice_value_label(dataset, dim_name, index_value)
+            value_label = cls._slice_value_label(dataset, dim_name, index_value, options)
             if position in split_positions:
                 split_key_parts.append((dim_name, value_label))
             else:
-                band_parts.append(f"{cls._sanitize_filename(dim_name)}_{value_label}")
+                band_parts.append(f"{cls._sanitize_filename(dim_name)}_{cls._sanitize_filename(value_label)}")
         band_label = "_".join(band_parts) if band_parts else "band_1"
         return tuple(split_key_parts), band_label
 
     @classmethod
-    def _slice_value_label(cls, dataset: Dataset, dim_name: str, index_value: int) -> str:
+    def _slice_value_label(
+        cls,
+        dataset: Dataset,
+        dim_name: str,
+        index_value: int,
+        options: NCRasterBatchOptions,
+    ) -> str:
         variable = dataset.variables.get(dim_name)
         if variable is not None and getattr(variable, "ndim", 0) == 1 and len(variable) > index_value:
-            value = variable[index_value]
-            value_array = np.asarray(value)
-            value_text = str(value_array.item() if value_array.shape == () else value)
+            config = options.dimension_label_configs.get(dim_name, DimensionLabelConfig())
+            value = cls._coerce_dimension_value(variable[index_value])
+            if config.role == "time":
+                formatted_time = cls._format_time_value(variable, value, dim_name, config)
+                if formatted_time is not None:
+                    return cls._sanitize_filename(formatted_time)
+            value_text = str(value)
             return cls._sanitize_filename(value_text)
         return f"{index_value:03d}"
 
@@ -1170,7 +1637,9 @@ class NCRasterToolsService:
         mean_diff = float(abs_diffs.mean())
         if mean_diff <= 0:
             raise ValueError(f"维度 {dim_name} 无法推断分辨率")
-        if not np.allclose(abs_diffs, mean_diff, rtol=1e-5, atol=1e-8):
+        # Float32 经纬度坐标常见 1e-5 量级抖动，严格 1e-5 rtol 会把标准 0.1° 网格误判为不规则。
+        atol = max(1e-8, mean_diff * 2e-4)
+        if not np.allclose(abs_diffs, mean_diff, rtol=2e-4, atol=atol):
             raise ValueError(f"维度 {dim_name} 不是等间距规则网格，当前工具暂不支持")
         return mean_diff
 
@@ -1194,10 +1663,16 @@ class NCRasterToolsService:
         return 0
 
     @staticmethod
-    def _resolve_output_dtype(source_dtype: np.dtype, nodata: float | int | None) -> np.dtype:
+    def _resolve_output_dtype(
+        source_dtype: np.dtype,
+        nodata: float | int | None,
+        resampling: str,
+    ) -> np.dtype:
         dtype = np.dtype(source_dtype)
         if dtype.kind == "f":
             return dtype
+        if resampling in NCRasterToolsService.FLOAT_PRESERVING_RESAMPLING:
+            return np.dtype("float32")
         if nodata is None:
             return np.dtype("float32")
         if dtype.kind == "u" and float(nodata) < 0:
