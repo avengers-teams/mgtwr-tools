@@ -12,7 +12,9 @@ import numpy as np
 import pyproj
 import rasterio
 from rasterio.crs import CRS
+from rasterio.errors import WindowError
 from rasterio.enums import Resampling
+from rasterio.features import geometry_mask, geometry_window
 from rasterio.io import MemoryFile
 from rasterio.mask import mask as raster_mask
 from rasterio.transform import Affine, array_bounds, from_origin
@@ -79,22 +81,29 @@ class TifBatchWorkflowOptions:
 
 @dataclass(slots=True)
 class RasterState:
-    data: np.ndarray
+    data: np.ndarray | None
     transform: Affine
     crs: CRS | None
     nodata: float | int | None
     profile: dict[str, object]
+    source_path: str | None = None
 
     @property
     def count(self) -> int:
+        if self.data is None:
+            return int(self.profile["count"])
         return int(self.data.shape[0])
 
     @property
     def height(self) -> int:
+        if self.data is None:
+            return int(self.profile["height"])
         return int(self.data.shape[1])
 
     @property
     def width(self) -> int:
+        if self.data is None:
+            return int(self.profile["width"])
         return int(self.data.shape[2])
 
 
@@ -294,16 +303,16 @@ class TifWorkflowToolsService:
     def _read_raster_state(cls, input_file: str, source_crs_override: str | None) -> RasterState:
         with rasterio.open(input_file) as dataset:
             profile = dict(dataset.profile)
-            data = dataset.read(masked=False)
             crs = dataset.crs
             if crs is None and source_crs_override:
                 crs = CRS.from_user_input(source_crs_override)
             return RasterState(
-                data=data,
+                data=None,
                 transform=dataset.transform,
                 crs=crs,
                 nodata=dataset.nodata,
                 profile=profile,
+                source_path=input_file,
             )
 
     @classmethod
@@ -330,8 +339,70 @@ class TifWorkflowToolsService:
         if vector.crs != state.crs:
             vector = vector.to_crs(state.crs)
 
-        dst_state = cls._ensure_nodata(state)
         geoms = [mapping(geom) for geom in vector.geometry]
+        if state.data is None and state.source_path:
+            clipped = cls._clip_source_window_by_vector(state, geoms, step)
+        else:
+            clipped = cls._clip_loaded_state_by_vector(state, geoms, step)
+        if step.trim_nodata_border:
+            clipped = cls._trim_nodata_border(clipped)
+        return clipped
+
+    @classmethod
+    def _clip_source_window_by_vector(
+        cls,
+        state: RasterState,
+        geoms: list[dict[str, object]],
+        step: ClipStepConfig,
+    ) -> RasterState:
+        if not state.source_path:
+            raise ValueError("当前栅格缺少源文件路径，无法按窗口读取")
+
+        with rasterio.open(state.source_path) as dataset:
+            try:
+                window = geometry_window(dataset, geoms)
+            except (WindowError, ValueError) as exc:
+                raise ValueError("裁切范围与栅格没有相交区域") from exc
+
+            data = dataset.read(window=window, masked=True)
+            transform = dataset.window_transform(window)
+            profile = dict(dataset.profile)
+            profile.update(
+                height=int(window.height),
+                width=int(window.width),
+            )
+            window_state = RasterState(
+                data=data,
+                transform=transform,
+                crs=state.crs,
+                nodata=dataset.nodata if dataset.nodata is not None else state.nodata,
+                profile=profile,
+            )
+
+        working = cls._ensure_nodata(window_state)
+        outside_mask = geometry_mask(
+            geoms,
+            out_shape=(working.height, working.width),
+            transform=working.transform,
+            all_touched=step.all_touched,
+            invert=False,
+        )
+        if outside_mask.all():
+            raise ValueError("裁切范围与栅格没有相交区域")
+
+        combined_mask = np.broadcast_to(outside_mask, working.data.shape)
+        working.data.mask = np.logical_or(working.data.mask, combined_mask)
+        data = working.data.filled(working.nodata)
+        return cls._replace_state(working, data=data)
+
+    @classmethod
+    def _clip_loaded_state_by_vector(
+        cls,
+        state: RasterState,
+        geoms: list[dict[str, object]],
+        step: ClipStepConfig,
+    ) -> RasterState:
+        dst_state = cls._ensure_nodata(state)
         with MemoryFile() as memory_file:
             with memory_file.open(**cls._build_profile(dst_state)) as dataset:
                 dataset.write(dst_state.data)
@@ -343,10 +414,7 @@ class TifWorkflowToolsService:
                     nodata=dst_state.nodata,
                     all_touched=step.all_touched,
                 )
-        clipped = cls._replace_state(dst_state, data=data, transform=transform)
-        if step.trim_nodata_border:
-            clipped = cls._trim_nodata_border(clipped)
-        return clipped
+        return cls._replace_state(dst_state, data=data, transform=transform)
 
     @classmethod
     def _clip_by_reference(cls, state: RasterState, step: ClipStepConfig) -> RasterState:
@@ -522,33 +590,35 @@ class TifWorkflowToolsService:
 
     @classmethod
     def _ensure_nodata(cls, state: RasterState) -> RasterState:
-        if state.nodata is not None:
-            return state
-        if np.issubdtype(state.data.dtype, np.integer):
-            temporary_nodata = cls._pick_temporary_integer_nodata(state.data)
+        working = cls._materialize_state(state)
+        if working.nodata is not None:
+            return working
+        if np.issubdtype(working.data.dtype, np.integer):
+            temporary_nodata = cls._pick_temporary_integer_nodata(working.data)
             if temporary_nodata is not None:
-                return cls._replace_state(state, nodata=temporary_nodata)
+                return cls._replace_state(working, nodata=temporary_nodata)
             raise ValueError("当前整数栅格缺少 NoData，且无法找到安全的临时整数 NoData 值，请先为源数据设置 NoData")
-        return cls._ensure_float_state(state, nodata=np.nan)
+        return cls._ensure_float_state(working, nodata=np.nan)
 
     @classmethod
     def _ensure_float_state(cls, state: RasterState, nodata: float = np.nan) -> RasterState:
-        float_data = state.data.astype(np.float32, copy=False)
-        float_nodata = nodata if state.nodata is None else float(state.nodata)
-        profile = dict(state.profile)
+        working = cls._materialize_state(state)
+        float_data = working.data.astype(np.float32, copy=False)
+        float_nodata = nodata if working.nodata is None else float(working.nodata)
+        profile = dict(working.profile)
         profile["dtype"] = "float32"
-        if np.issubdtype(state.data.dtype, np.floating):
+        if np.issubdtype(working.data.dtype, np.floating):
             return RasterState(
                 data=float_data,
-                transform=state.transform,
-                crs=state.crs,
+                transform=working.transform,
+                crs=working.crs,
                 nodata=float_nodata,
                 profile=profile,
             )
         return RasterState(
             data=float_data,
-            transform=state.transform,
-            crs=state.crs,
+            transform=working.transform,
+            crs=working.crs,
             nodata=float_nodata,
             profile=profile,
         )
@@ -561,7 +631,8 @@ class TifWorkflowToolsService:
 
     @classmethod
     def _trim_nodata_border(cls, state: RasterState) -> RasterState:
-        invalid_mask = cls._nodata_mask(state.data, state.nodata)
+        working = cls._materialize_state(state)
+        invalid_mask = cls._nodata_mask(working.data, working.nodata)
         valid_mask = ~np.all(invalid_mask, axis=0)
         if not valid_mask.any():
             raise ValueError("裁切后没有有效像元")
@@ -570,9 +641,29 @@ class TifWorkflowToolsService:
         col_index = np.where(valid_mask.any(axis=0))[0]
         row_start, row_end = int(row_index[0]), int(row_index[-1]) + 1
         col_start, col_end = int(col_index[0]), int(col_index[-1]) + 1
-        data = state.data[:, row_start:row_end, col_start:col_end]
-        transform = state.transform * Affine.translation(col_start, row_start)
-        return cls._replace_state(state, data=data, transform=transform)
+        data = working.data[:, row_start:row_end, col_start:col_end]
+        transform = working.transform * Affine.translation(col_start, row_start)
+        return cls._replace_state(working, data=data, transform=transform)
+
+    @classmethod
+    def _materialize_state(cls, state: RasterState) -> RasterState:
+        if state.data is not None:
+            return state
+        if not state.source_path:
+            raise ValueError("当前栅格未加载到内存，且缺少源文件路径")
+
+        with rasterio.open(state.source_path) as dataset:
+            data = dataset.read(masked=False)
+            profile = dict(dataset.profile)
+
+        return RasterState(
+            data=data,
+            transform=state.transform,
+            crs=state.crs,
+            nodata=state.nodata,
+            profile=profile,
+            source_path=state.source_path,
+        )
 
     @staticmethod
     def _replace_state(
@@ -619,8 +710,9 @@ class TifWorkflowToolsService:
 
     @classmethod
     def _write_state(cls, output_path: str, state: RasterState) -> None:
-        with rasterio.open(output_path, "w", **cls._build_profile(state)) as dataset:
-            dataset.write(state.data)
+        working = cls._materialize_state(state)
+        with rasterio.open(output_path, "w", **cls._build_profile(working)) as dataset:
+            dataset.write(working.data)
 
     @classmethod
     def _nodata_mask(cls, data: np.ndarray, nodata: float | int | None) -> np.ndarray:
