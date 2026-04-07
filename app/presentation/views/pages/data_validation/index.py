@@ -5,6 +5,7 @@ from app.presentation.views.widgets.fluent_surface import ActionPanel, PageHeade
 from app.presentation.views.pages.data_validation.coefficients_to_shp import CoefficientsToShpWindow
 from app.presentation.views.pages.data_validation.data_standardization import DataStandardizationWindow
 from app.presentation.views.pages.data_validation.nc_raster_tools import NCRasterToolsWindow
+from app.presentation.views.pages.data_validation.tif_workflow_tools import TifWorkflowToolsWindow
 from app.presentation.views.pages.data_validation.variance_Inflation_factor import VIFWindow
 
 
@@ -15,6 +16,7 @@ class AdditionalWindows(QWidget):
         self.shp_window = None
         self.standardization_window = None
         self.nc_raster_window = None
+        self.tif_workflow_window = None
         self.init_ui()
 
     def init_ui(self):
@@ -68,6 +70,16 @@ class AdditionalWindows(QWidget):
             1,
             1,
         )
+        grid.addWidget(
+            self.build_tool_panel(
+                "TIF 批处理流程",
+                "批量处理 tif：拖拽编排裁切、重采样、重投影、重分类流程。",
+                "打开 TIF 工具",
+                self.open_tif_workflow_window,
+            ),
+            2,
+            0,
+        )
 
         layout.addLayout(grid)
         layout.addStretch(1)
@@ -94,6 +106,7 @@ class AdditionalWindows(QWidget):
             self.shp_window,
             self.standardization_window,
             self.nc_raster_window,
+            self.tif_workflow_window,
         )
 
     @staticmethod
@@ -121,3 +134,8 @@ class AdditionalWindows(QWidget):
         if self.nc_raster_window is None or not self.nc_raster_window.isVisible():
             self.nc_raster_window = NCRasterToolsWindow()
         self._show_window(self.nc_raster_window)
+
+    def open_tif_workflow_window(self):
+        if self.tif_workflow_window is None or not self.tif_workflow_window.isVisible():
+            self.tif_workflow_window = TifWorkflowToolsWindow()
+        self._show_window(self.tif_workflow_window)
